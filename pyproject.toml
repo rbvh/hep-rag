@@ -21,6 +21,14 @@ hep-rag-embed-query = "hep_rag.embed.embed_query:main"
 embeddings = [
   "numpy>=1.26",
   "sentence-transformers>=3.0",
+  "torch>=2.2",
+  "transformers>=4.51.0",
+]
+dev = [
+  "pytest>=8",
+]
+gpu = [
+  "vllm>=0.8.5",
 ]
 
 [tool.pytest.ini_options]

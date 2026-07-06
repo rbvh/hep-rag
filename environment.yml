@@ -4,6 +4,5 @@ channels:
 dependencies:
   - python=3.12
   - pip
-  - pytest
   - pip:
-      - -e .[embeddings]
+      - -e .[embeddings,dev]

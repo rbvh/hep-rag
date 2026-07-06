@@ -81,6 +81,12 @@ Install embedding dependencies inside the conda environment:
 pip install -e ".[embeddings]"
 ```
 
+For development and tests, install:
+
+```bash
+pip install -e ".[embeddings,dev]"
+```
+
 Build local Qwen embeddings for the current chunks:
 
 ```bash
@@ -117,6 +123,17 @@ hep-rag-build-embeddings --limit 3 --dry-run
 ```
 
 If running a vLLM/OpenAI-compatible embedding server elsewhere, use:
+
+```bash
+pip install -e ".[gpu]"
+vllm serve Qwen/Qwen3-Embedding-0.6B \
+  --task embed \
+  --dtype float16 \
+  --max-model-len 4096 \
+  --gpu-memory-utilization 0.85
+```
+
+Then build embeddings through the OpenAI-compatible endpoint:
 
 ```bash
 hep-rag-build-embeddings \
