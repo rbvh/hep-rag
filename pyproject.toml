@@ -1,0 +1,27 @@
+[project]
+name = "hep-rag-lab"
+version = "0.1.0"
+description = "Evaluated RAG experiments for high-energy physics papers."
+requires-python = ">=3.11"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+hep-rag-living-review-sources = "hep_rag.ingest.living_review_sources:main"
+hep-rag-build-chunks = "hep_rag.ingest.build_chunks:main"
+hep-rag-build-embeddings = "hep_rag.embed.build_embeddings:main"
+hep-rag-embed-query = "hep_rag.embed.embed_query:main"
+
+[project.optional-dependencies]
+embeddings = [
+  "numpy>=1.26",
+  "sentence-transformers>=3.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
