@@ -5,4 +5,4 @@ dependencies:
   - python=3.12
   - pip
   - pip:
-      - -e .[embeddings,dev]
+      - -e .[embeddings,pgvector,dev]

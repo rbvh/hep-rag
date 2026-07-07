@@ -16,6 +16,8 @@ hep-rag-living-review-sources = "hep_rag.ingest.living_review_sources:main"
 hep-rag-build-chunks = "hep_rag.ingest.build_chunks:main"
 hep-rag-build-embeddings = "hep_rag.embed.build_embeddings:main"
 hep-rag-embed-query = "hep_rag.embed.embed_query:main"
+hep-rag-pg-load = "hep_rag.search.pgvector_search:load_main"
+hep-rag-pg-search = "hep_rag.search.pgvector_search:search_main"
 
 [project.optional-dependencies]
 embeddings = [
@@ -26,6 +28,10 @@ embeddings = [
 ]
 dev = [
   "pytest>=8",
+]
+pgvector = [
+  "numpy>=1.26",
+  "psycopg[binary]>=3.2",
 ]
 gpu = [
   "vllm>=0.8.5",

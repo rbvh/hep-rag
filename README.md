@@ -84,7 +84,7 @@ pip install -e ".[embeddings]"
 For development and tests, install:
 
 ```bash
-pip install -e ".[embeddings,dev]"
+pip install -e ".[embeddings,pgvector,dev]"
 ```
 
 Build local Qwen embeddings for the current chunks:
@@ -115,6 +115,59 @@ Outputs are written under `data/embeddings/<model-name>/`:
 - `embeddings.npy`: float32 matrix, one row per embedded chunk.
 - `rows.jsonl`: row-to-chunk mapping aligned with `embeddings.npy`.
 - `config.json`: model, backend, input file, dimensions, and run settings.
+
+## Postgres + pgvector
+
+For a deployable vector-database version, start a local pgvector Postgres:
+
+```bash
+docker compose up -d postgres
+export DATABASE_URL=postgresql://hep_rag:hep_rag@localhost:5432/hep_rag
+```
+
+Load the saved chunks and embeddings:
+
+```bash
+hep-rag-pg-load \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --recreate
+```
+
+This creates a `rag_chunks` table with chunk metadata, text, categories, and a
+`vector(1024)` embedding column. By default it also creates an HNSW pgvector
+index using inner-product search.
+
+Search through Postgres:
+
+```bash
+hep-rag-pg-search "normalizing flows for lattice gauge theory" \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --device mps \
+  --torch-dtype float16 \
+  --top-k 10 \
+  --candidate-k 50 \
+  --max-chunks-per-paper 2
+```
+
+Optionally rerank the top vector candidates with Qwen's reranker:
+
+```bash
+hep-rag-pg-search "normalizing flows for lattice gauge theory" \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --device mps \
+  --torch-dtype float16 \
+  --top-k 10 \
+  --candidate-k 50 \
+  --max-chunks-per-paper 2 \
+  --rerank \
+  --rerank-device mps \
+  --rerank-torch-dtype float16
+```
+
+The vector score is retained in the output alongside the reranker score, which
+helps debug whether errors come from first-stage retrieval or the reranker.
+The `--max-chunks-per-paper` cap diversifies final results while still allowing
+more than one useful passage from the same paper.
 
 To smoke-test configuration without loading the model:
 
