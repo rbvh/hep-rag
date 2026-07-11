@@ -1,0 +1,54 @@
+# Retrieval Label Review Notes
+
+These notes summarize the model-assisted review used while drafting the retrieval labels. `needs_review` remains true in the JSONL because these labels should still get a human spot-check before being treated as gold.
+
+- `draft_001`: Added broader jet-classification literature found by vector search, including survey, IRC-safe information, ultrafast, attention, and Particle Transformer context.
+- `draft_002`: Added direct FPGA jet-tagger and hls4ml/compression papers; dropped overly generic co-design/hardware context.
+- `draft_003`: Added direct matrix-element emulation, differentiable matrix-element, and CPU/GPU acceleration results.
+- `draft_004`: Inspected chunks confirming negative-weight mitigation in Stay Positive and sPlot paper; added event-unweighting and weighted-event flow papers.
+- `draft_005`: Added scaling-laws amplitude surrogate as a true target; ignored phase-space papers without amplitude-surrogate focus.
+- `draft_006`: Kept validation/uncertainty and factorisation-aware amplitude targets; left broader reviews/theory papers out.
+- `draft_007`: Added Feynman-integral neural differential-equation, post-Minkowskian, RL reduction, and neural integration papers.
+- `draft_008`: Added original and related flow/flow-matching event-generation papers plus the event-generation review.
+- `draft_009`: Reworded PDF acronym to avoid detector-effect unfolding false positives; kept the detector-level proton-PDF SBI paper as the target.
+- `draft_010`: Fixed TDF typo to TMD PDFs; other retrieved PDF-fit papers were general context, not TMD-specific targets.
+- `draft_011`: Narrowed to lattice/PDF matrix-element literature and removed non-lattice PDF inference targets.
+- `draft_012`: Kept Hyper-K target only; KM3NeT CNN reconstruction is analogous but not an answer to the Hyper-K-specific query.
+- `draft_013`: Kept jet-to-neutrino transfer and nearby neutrino-detector foundation-style target; generic jet foundation models remain context only.
+- `draft_014`: Added CMS MLPF/particle-flow predecessors and removed LHCb PVFinder, which is GPU reconstruction but not CMS particle flow.
+- `draft_015`: Added LEP agentic measurement and detector-signature simulation review as useful old-experiment/generative-detector context.
+- `draft_016`: Added calorimeter/FPGA and online calorimeter processing papers; ignored generic FPGA-as-a-service as less directly relevant.
+- `draft_017`: Added ViT, all-showers, CaloChallenge, and CaloDREAM/foundation calorimetry candidates.
+- `draft_018`: Reworded toward superresolution; retrieved reconstruction/calibration papers were related calorimetry but not the requested coarse-to-fine task.
+- `draft_019`: Added direct lattice-gauge diffusion papers; kept the SU(3) lattice review as context.
+- `draft_020`: Added flow/GAN/diffusion/review papers on generative sampling and critical slowing down in lattice field theory.
+- `draft_021`: Added neural Wilson-loop interpolators and equivariant lattice field theory context.
+- `draft_022`: Kept true unbinned/unfolding targets and added an inspected INN detector-unfolding paper; top detector/simulation retrievals were false positives.
+- `draft_023`: Added SBI reviews, systematics/domain-adaptation, MadMiner, and ATLAS implementation papers relevant to systematic uncertainties.
+- `draft_024`: Added high-dimensional/irrelevant-feature, weakly supervised, LHC Olympics, and density-estimation anomaly papers.
+- `draft_025`: Added the original Classification without Labels paper and weak/lightly supervised anomaly-search literature.
+- `draft_026`: Added direct real-time trigger anomaly-detection, CMS trigger-test, triggerless DAQ, decorrelated trigger, and real-time-analysis review papers.
+- `draft_027`: Added smart-pixel/on-sensor filtering and imaging-detector reconstruction papers; dropped time-series DQM as not image data reduction.
+- `draft_028`: Added DDT, mass-agnostic/mass-unspecific, and resonant anomaly-detection papers that directly address mass sculpting/decorrelation.
+- `draft_029`: Added nuisance-parameter review, unbinned systematics, exclusion-limit, and likelihood-significance papers.
+- `draft_030`: Reworded from dataset-only because vector results showed the natural query meaning was pileup methods/datasets; added pileup mitigation and tracking targets.
+- `draft_031`: Added collider/HEP foundation-model methodology, overview, Bumblebee, and SMEFT representation papers.
+- `draft_032`: Broadened from coding-only to HEP software/assistant benchmarks and agents, matching the retrieved literature.
+- `draft_033`: Added DQM, monitoring, online autoencoder, MEDIC, and fast kernel data-quality papers.
+- `draft_034`: Added online/FPGA/tracking and ambiguity-resolution papers; left neutrino CNN/noise-removal papers out as off-topic.
+- `draft_035`: Added GNN/FPGA/TrackFormer/review/edge-classifying tracking papers.
+- `draft_036`: Added primary-vertex ML papers as context; generic real-time architecture papers left out.
+- `draft_037`: Added CMS tau domain-adaptation, online/offline reconstruction, DNN tau ID, and unified tau reconstruction papers.
+- `draft_038`: Added Particle Transformer and JetFormer context for transformer-based jet tagging; kept b-tag/event-context targets.
+- `draft_039`: Narrowed to PanopTag; other retrieved jet taggers are baselines but do not answer all-jets-at-once event-context tagging.
+- `draft_040`: Added strange/flavour-tagging papers for FCC-ee, fragmentation tagging, LSTM strange tagging, and ILC/CEPC flavour studies.
+- `draft_041`: Added quark-gluon CNN paper, jet-image survey, and transformer flavour-tagging context.
+- `draft_042`: Added economical/quantized/tiny/top-tagger and top-tagger review papers.
+- `draft_043`: Added geometry/energy-correlation top-tagger as nearby topology/geometry representation; ignored generic geometry ML review.
+- `draft_044`: Added original Particle Transformer and IAFormer context; kept sparse-attention paper as primary target.
+- `draft_045`: Added parameter-space exploration, BSM inference, black-box optimisation, and constrained-space sampling papers.
+- `draft_046`: Vector disagreement revealed a genuine accelerator-control paper; changed from negative probe to positive weak/specific case.
+- `draft_047`: Slow-control hardware failure was too narrow, but chunks confirm monitoring/DQM papers on detector currents and anomalies are relevant.
+- `draft_048`: Kept as no-known-match: retrieved fast-simulation and quantum-ML papers do not claim full Geant4 on quantum computers.
+- `draft_049`: Kept empty: retrieved HEP LLM/agent papers are adjacent, but not private ATLAS analysis-note generation.
+- `draft_050`: Kept empty: retrieved NNLO/event-generation papers are adjacent but not exact NNLO subtraction-term derivation.

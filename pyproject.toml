@@ -18,6 +18,7 @@ hep-rag-build-embeddings = "hep_rag.embed.build_embeddings:main"
 hep-rag-embed-query = "hep_rag.embed.embed_query:main"
 hep-rag-pg-load = "hep_rag.search.pgvector_search:load_main"
 hep-rag-pg-search = "hep_rag.search.pgvector_search:search_main"
+hep-rag-eval-retrieval = "hep_rag.eval.retrieval_metrics:main"
 
 [project.optional-dependencies]
 embeddings = [

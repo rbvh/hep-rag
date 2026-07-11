@@ -26,6 +26,7 @@ from hep_rag.search.common import (
 
 DEFAULT_DATABASE_URL = "postgresql://hep_rag:hep_rag@localhost:5432/hep_rag"
 DEFAULT_TABLE = "rag_chunks"
+DEFAULT_RRF_K = 60
 
 
 def load_main(argv: list[str] | None = None) -> int:
@@ -100,8 +101,8 @@ def load_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--vector-index",
         choices=["none", "hnsw", "ivfflat"],
-        default="hnsw",
-        help="Vector index to create after loading.",
+        default="none",
+        help="Vector index to create after loading. Defaults to exact sequential search.",
     )
     return parser
 
@@ -117,16 +118,30 @@ def search_main(argv: list[str] | None = None) -> int:
         ) from error
 
     query = read_query(args)
-    embedding_config = load_json(args.embedding_dir / "config.json")
-    vector = embed_query(query, args, embedding_config)
-    query_vector = vector_to_pgvector(vector[0])
+    query_vector = None
+    if retrieval_uses_vector(args.retrieval):
+        embedding_config = load_json(args.embedding_dir / "config.json")
+        vector = embed_query(query, args, embedding_config)
+        query_vector = vector_to_pgvector(vector[0])
     table = validate_identifier(args.table)
-    sql = search_sql(table)
+    sql = search_sql(table, retrieval=args.retrieval)
     database_url = database_url_from_args(args)
     retrieval_limit = retrieval_candidate_limit(args)
 
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
-        rows = conn.execute(sql, {"query": query_vector, "top_k": retrieval_limit}).fetchall()
+        if retrieval_uses_vector(args.retrieval):
+            configure_vector_search(conn, exact=args.exact, hnsw_ef_search=args.hnsw_ef_search)
+        rows = conn.execute(
+            sql,
+            search_params(
+                query_vector=query_vector,
+                query_text=query,
+                top_k=retrieval_limit,
+                vector_top_k=retrieval_limit,
+                bm25_top_k=args.bm25_candidate_k or args.candidate_k,
+                rrf_k=args.rrf_k,
+            ),
+        ).fetchall()
 
     hits = pg_rows_to_hits(rows)
     if args.rerank:
@@ -159,7 +174,24 @@ def search_parser() -> argparse.ArgumentParser:
         "--candidate-k",
         type=int,
         default=50,
-        help="Number of vector hits to fetch before reranking.",
+        help="Number of vector hits to fetch before reranking or hybrid fusion.",
+    )
+    parser.add_argument(
+        "--bm25-candidate-k",
+        type=int,
+        help="Number of lexical hits to fetch for BM25 or hybrid retrieval. Defaults to --candidate-k.",
+    )
+    parser.add_argument(
+        "--retrieval",
+        choices=["vector", "bm25", "hybrid"],
+        default="vector",
+        help="First-stage retrieval strategy.",
+    )
+    parser.add_argument(
+        "--rrf-k",
+        type=int,
+        default=DEFAULT_RRF_K,
+        help="Reciprocal Rank Fusion constant for hybrid retrieval.",
     )
     parser.add_argument(
         "--max-chunks-per-paper",
@@ -168,6 +200,17 @@ def search_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-text-chars", type=int, default=900)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--exact",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use exact vector search. Pass --no-exact to allow ANN indexes.",
+    )
+    parser.add_argument(
+        "--hnsw-ef-search",
+        type=int,
+        help="Set hnsw.ef_search for --no-exact HNSW searches.",
+    )
     parser.add_argument(
         "--rerank",
         action=argparse.BooleanOptionalAction,
@@ -238,6 +281,52 @@ def retrieval_candidate_limit(args: argparse.Namespace) -> int:
     return args.top_k
 
 
+def retrieval_uses_vector(retrieval: str) -> bool:
+    return retrieval in {"vector", "hybrid"}
+
+
+def search_params(
+    query_vector: str | None,
+    query_text: str,
+    top_k: int,
+    vector_top_k: int,
+    bm25_top_k: int,
+    rrf_k: int,
+) -> dict[str, Any]:
+    if top_k < 1:
+        raise SystemExit("--top-k must be at least 1")
+    if vector_top_k < 1:
+        raise SystemExit("--candidate-k must be at least 1")
+    if bm25_top_k < 1:
+        raise SystemExit("--bm25-candidate-k must be at least 1")
+    if rrf_k < 1:
+        raise SystemExit("--rrf-k must be at least 1")
+    return {
+        "query": query_vector,
+        "query_text": query_text,
+        "top_k": top_k,
+        "vector_top_k": vector_top_k,
+        "bm25_top_k": bm25_top_k,
+        "rrf_k": rrf_k,
+    }
+
+
+def configure_vector_search(
+    conn: Any,
+    exact: bool = True,
+    hnsw_ef_search: int | None = None,
+) -> None:
+    if hnsw_ef_search is not None and hnsw_ef_search < 1:
+        raise SystemExit("--hnsw-ef-search must be at least 1")
+    if exact:
+        if hnsw_ef_search is not None:
+            raise SystemExit("--hnsw-ef-search only applies with --no-exact")
+        conn.execute("SET LOCAL enable_indexscan = off")
+        return
+    if hnsw_ef_search is not None:
+        conn.execute(f"SET LOCAL hnsw.ef_search = {int(hnsw_ef_search)}")
+
+
 def create_schema(conn: Any, table: str, dimension: int, recreate: bool = False) -> None:
     conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
     if recreate:
@@ -259,9 +348,16 @@ def create_schema(conn: Any, table: str, dimension: int, recreate: bool = False)
             token_count INTEGER NOT NULL,
             text TEXT NOT NULL,
             source_url TEXT,
+            search_document TEXT NOT NULL DEFAULT '',
+            search_vector TSVECTOR NOT NULL DEFAULT to_tsvector('english'::regconfig, ''::text),
             embedding vector({dimension}) NOT NULL
         )
         """
+    )
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS search_document TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS search_vector TSVECTOR "
+        f"NOT NULL DEFAULT to_tsvector('english'::regconfig, ''::text)"
     )
 
 
@@ -271,6 +367,10 @@ def create_metadata_indexes(conn: Any, table: str) -> None:
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS {table}_categories_gin_idx "
         f"ON {table} USING gin (living_review_categories)"
+    )
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS {table}_search_vector_gin_idx "
+        f"ON {table} USING gin (search_vector)"
     )
 
 
@@ -295,13 +395,15 @@ def insert_chunk_batch(conn: Any, table: str, records: list[dict[str, Any]]) -> 
         INSERT INTO {table} (
             chunk_id, row_index, paper_id, chunk_index, chunk_type, title,
             authors, year, primary_class, section_path, living_review_categories,
-            token_count, text, source_url, embedding
+            token_count, text, source_url, search_document, search_vector, embedding
         )
         VALUES (
             %(chunk_id)s, %(row_index)s, %(paper_id)s, %(chunk_index)s,
             %(chunk_type)s, %(title)s, %(authors)s, %(year)s, %(primary_class)s,
             %(section_path)s::jsonb, %(living_review_categories)s::jsonb,
-            %(token_count)s, %(text)s, %(source_url)s, %(embedding)s::vector
+            %(token_count)s, %(text)s, %(source_url)s, %(search_document)s,
+            to_tsvector('english'::regconfig, %(search_document)s),
+            %(embedding)s::vector
         )
         ON CONFLICT (chunk_id) DO UPDATE SET
             row_index = EXCLUDED.row_index,
@@ -317,6 +419,8 @@ def insert_chunk_batch(conn: Any, table: str, records: list[dict[str, Any]]) -> 
             token_count = EXCLUDED.token_count,
             text = EXCLUDED.text,
             source_url = EXCLUDED.source_url,
+            search_document = EXCLUDED.search_document,
+            search_vector = EXCLUDED.search_vector,
             embedding = EXCLUDED.embedding
     """
     with conn.cursor() as cursor:
@@ -351,26 +455,135 @@ def iter_chunk_records(
             "token_count": int(row["token_count"]),
             "text": str(chunk.get("text") or ""),
             "source_url": value_or_none(chunk, "source_url"),
+            "search_document": search_document_text(chunk),
             "embedding": vector_to_pgvector(vector),
         }
 
 
-def search_sql(table: str) -> str:
+def search_document_text(chunk: dict[str, Any]) -> str:
+    lines = []
+    title = value_or_none(chunk, "title")
+    if title:
+        lines.append(title)
+    section_path = chunk.get("section_path") or []
+    if section_path:
+        lines.append(" ".join(str(part) for part in section_path))
+    categories = chunk.get("living_review_categories") or []
+    for category in categories:
+        lines.append(" ".join(str(part) for part in category))
+    text = str(chunk.get("text") or "").strip()
+    if text:
+        lines.append(text)
+    return "\n".join(lines)
+
+
+def search_sql(table: str, retrieval: str = "vector") -> str:
+    if retrieval == "vector":
+        return vector_search_sql(table)
+    if retrieval == "bm25":
+        return bm25_search_sql(table)
+    if retrieval == "hybrid":
+        return hybrid_search_sql(table)
+    raise ValueError(f"Unknown retrieval mode: {retrieval}")
+
+
+def chunk_select_columns(alias: str = "chunks") -> str:
+    return f"""
+            {alias}.chunk_id,
+            {alias}.paper_id,
+            {alias}.title,
+            {alias}.section_path,
+            {alias}.living_review_categories,
+            {alias}.chunk_type,
+            {alias}.token_count,
+            {alias}.text,
+            {alias}.source_url
+    """
+
+
+def vector_search_sql(table: str) -> str:
     return f"""
         WITH query AS (SELECT %(query)s::vector AS embedding)
         SELECT
-            chunks.chunk_id,
-            chunks.paper_id,
-            chunks.title,
-            chunks.section_path,
-            chunks.living_review_categories,
-            chunks.chunk_type,
-            chunks.token_count,
-            chunks.text,
-            chunks.source_url,
-            -(chunks.embedding <#> query.embedding) AS score
+            {chunk_select_columns("chunks")},
+            -(chunks.embedding <#> query.embedding) AS score,
+            -(chunks.embedding <#> query.embedding) AS vector_score,
+            NULL::double precision AS lexical_score,
+            NULL::double precision AS rrf_score
         FROM {table} AS chunks, query
         ORDER BY chunks.embedding <#> query.embedding
+        LIMIT %(top_k)s
+    """
+
+
+def bm25_search_sql(table: str) -> str:
+    return f"""
+        WITH query AS (
+            SELECT websearch_to_tsquery('english'::regconfig, %(query_text)s) AS terms
+        )
+        SELECT
+            {chunk_select_columns("chunks")},
+            ts_rank_cd(chunks.search_vector, query.terms) AS score,
+            NULL::double precision AS vector_score,
+            ts_rank_cd(chunks.search_vector, query.terms) AS lexical_score,
+            NULL::double precision AS rrf_score
+        FROM {table} AS chunks, query
+        WHERE query.terms @@ chunks.search_vector
+        ORDER BY score DESC, chunks.chunk_id
+        LIMIT %(top_k)s
+    """
+
+
+def hybrid_search_sql(table: str) -> str:
+    return f"""
+        WITH
+        vector_query AS (SELECT %(query)s::vector AS embedding),
+        lexical_query AS (
+            SELECT websearch_to_tsquery('english'::regconfig, %(query_text)s) AS terms
+        ),
+        vector_hits AS (
+            SELECT
+                chunks.chunk_id,
+                -(chunks.embedding <#> vector_query.embedding) AS vector_score,
+                row_number() OVER (ORDER BY chunks.embedding <#> vector_query.embedding) AS vector_rank
+            FROM {table} AS chunks, vector_query
+            ORDER BY chunks.embedding <#> vector_query.embedding
+            LIMIT %(vector_top_k)s
+        ),
+        lexical_hits AS (
+            SELECT
+                chunks.chunk_id,
+                ts_rank_cd(chunks.search_vector, lexical_query.terms) AS lexical_score,
+                row_number() OVER (
+                    ORDER BY ts_rank_cd(chunks.search_vector, lexical_query.terms) DESC, chunks.chunk_id
+                ) AS lexical_rank
+            FROM {table} AS chunks, lexical_query
+            WHERE lexical_query.terms @@ chunks.search_vector
+            ORDER BY lexical_score DESC, chunks.chunk_id
+            LIMIT %(bm25_top_k)s
+        ),
+        combined AS (
+            SELECT chunk_id FROM vector_hits
+            UNION
+            SELECT chunk_id FROM lexical_hits
+        )
+        SELECT
+            {chunk_select_columns("chunks")},
+            (
+                COALESCE(1.0 / (%(rrf_k)s + vector_hits.vector_rank), 0.0)
+                + COALESCE(1.0 / (%(rrf_k)s + lexical_hits.lexical_rank), 0.0)
+            ) AS score,
+            vector_hits.vector_score AS vector_score,
+            lexical_hits.lexical_score AS lexical_score,
+            (
+                COALESCE(1.0 / (%(rrf_k)s + vector_hits.vector_rank), 0.0)
+                + COALESCE(1.0 / (%(rrf_k)s + lexical_hits.lexical_rank), 0.0)
+            ) AS rrf_score
+        FROM combined
+        JOIN {table} AS chunks USING (chunk_id)
+        LEFT JOIN vector_hits USING (chunk_id)
+        LEFT JOIN lexical_hits USING (chunk_id)
+        ORDER BY score DESC, chunks.chunk_id
         LIMIT %(top_k)s
     """
 
@@ -394,7 +607,11 @@ def pg_rows_to_hits(rows: list[dict[str, Any]]) -> list[SearchHit]:
                 token_count=int(row["token_count"]),
                 text=str(row["text"]),
                 source_url=value_or_none(row, "source_url"),
-                vector_score=float(row["score"]),
+                vector_score=row_score(row, "vector_score", fallback_key="score"),
+                lexical_score=(
+                    float(row["lexical_score"]) if row.get("lexical_score") is not None else None
+                ),
+                rrf_score=float(row["rrf_score"]) if row.get("rrf_score") is not None else None,
             )
         )
     return hits
@@ -409,6 +626,20 @@ def load_chunks_by_id(path: Path) -> dict[str, dict[str, Any]]:
             chunk = json.loads(line)
             chunks[str(chunk["chunk_id"])] = chunk
     return chunks
+
+
+def row_score(
+    row: dict[str, Any],
+    key: str,
+    fallback_key: str | None = None,
+) -> float | None:
+    if key in row:
+        value = row.get(key)
+    elif fallback_key is not None:
+        value = row.get(fallback_key)
+    else:
+        value = None
+    return float(value) if value is not None else None
 
 
 def vector_to_pgvector(vector: Any) -> str:

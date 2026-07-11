@@ -134,8 +134,14 @@ hep-rag-pg-load \
 ```
 
 This creates a `rag_chunks` table with chunk metadata, text, categories, and a
-`vector(1024)` embedding column. By default it also creates an HNSW pgvector
-index using inner-product search.
+`vector(1024)` embedding column, plus a Postgres full-text `search_vector` used
+for BM25-style lexical and hybrid retrieval. It does not create a vector index
+by default; the corpus is small enough that exact search is simpler and better
+for evaluation. To opt into approximate search, pass `--vector-index hnsw` when
+loading and `--no-exact` when searching.
+
+If you already loaded an older table, rerun `hep-rag-pg-load` so the lexical
+search columns are added and populated.
 
 Search through Postgres:
 
@@ -148,6 +154,27 @@ hep-rag-pg-search "normalizing flows for lattice gauge theory" \
   --candidate-k 50 \
   --max-chunks-per-paper 2
 ```
+
+Search is exact by default, even if a vector index exists on the table. For
+approximate HNSW search, pass `--no-exact`; `--hnsw-ef-search 500` can be used
+to trade speed for better recall.
+
+Lexical and hybrid retrieval use Postgres full-text search:
+
+```bash
+hep-rag-pg-search "Particle Transformer sparse attention" \
+  --retrieval hybrid \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --device mps \
+  --torch-dtype float16 \
+  --top-k 10 \
+  --candidate-k 300 \
+  --bm25-candidate-k 300 \
+  --max-chunks-per-paper 2
+```
+
+Hybrid retrieval combines vector and BM25-style rankings with Reciprocal Rank
+Fusion. BM25-only search is also available with `--retrieval bm25`.
 
 Optionally rerank the top vector candidates with Qwen's reranker:
 
@@ -168,6 +195,42 @@ The vector score is retained in the output alongside the reranker score, which
 helps debug whether errors come from first-stage retrieval or the reranker.
 The `--max-chunks-per-paper` cap diversifies final results while still allowing
 more than one useful passage from the same paper.
+
+## Retrieval eval
+
+Draft retrieval labels live in `data/eval/retrieval_queries.jsonl`. To score
+the current retriever against those labels:
+
+```bash
+hep-rag-eval-retrieval \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --device mps \
+  --torch-dtype float16 \
+  --candidate-k 3000 \
+  --top-papers 40
+```
+
+This writes `data/eval/reports/retrieval_metrics.json` and
+`data/eval/reports/retrieval_metrics.md`. The command embeds the eval queries,
+searches Postgres exactly by default, collapses chunk hits to unique papers,
+then computes paper-level recall, precision, hit rate, MRR, and average
+precision. Queries with no target papers are summarized separately by how many
+non-target papers they retrieve.
+
+To rerank the retrieved paper representatives:
+
+```bash
+hep-rag-eval-retrieval \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --device mps \
+  --torch-dtype float16 \
+  --candidate-k 3000 \
+  --top-papers 40 \
+  --rerank \
+  --rerank-candidate-papers 100 \
+  --rerank-device mps \
+  --rerank-torch-dtype float16
+```
 
 To smoke-test configuration without loading the model:
 

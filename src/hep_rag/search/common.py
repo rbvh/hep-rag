@@ -42,6 +42,8 @@ class SearchHit:
     text: str
     source_url: str | None
     vector_score: float | None = None
+    lexical_score: float | None = None
+    rrf_score: float | None = None
     rerank_score: float | None = None
 
 
@@ -239,6 +241,10 @@ def format_hits(hits: list[SearchHit], max_text_chars: int = 900) -> str:
             lines.append(f"Rerank score: {hit.rerank_score:.4f}")
         if hit.vector_score is not None:
             lines.append(f"Vector score: {hit.vector_score:.4f}")
+        if hit.lexical_score is not None:
+            lines.append(f"Lexical score: {hit.lexical_score:.4f}")
+        if hit.rrf_score is not None:
+            lines.append(f"RRF score: {hit.rrf_score:.4f}")
         lines.extend(
             [
                 f"Paper: {hit.paper_id}",
