@@ -4,28 +4,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-import sys
-import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from hep_rag.embed.build_embeddings import (
+    DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     default_out_dir,
     embed_with_openai_compatible,
-    embed_with_sentence_transformers,
     normalize_rows,
-    sentence_transformer_model_kwargs,
 )
 
 
 DEFAULT_EMBEDDING_DIR = default_out_dir(DEFAULT_MODEL)
+DEFAULT_EMBEDDING_BASE_URL = DEFAULT_BASE_URL
 DEFAULT_RERANK_MODEL = "Qwen/Qwen3-Reranker-0.6B"
 DEFAULT_RERANK_INSTRUCTION = (
     "Given a physics literature search query, retrieve relevant passages that answer the query"
 )
+DEFAULT_RERANK_BASE_URL = "http://localhost:8002"
 
 
 @dataclass(frozen=True)
@@ -70,89 +70,18 @@ def embed_query(query: str, args: argparse.Namespace, embedding_config: dict[str
             vector = vector.reshape(1, -1)
         return vector
 
-    if not args.embed_in_process:
-        return embed_query_subprocess(query, args, embedding_config)
-
     embed_args = argparse.Namespace(
         backend=args.backend,
         model=args.model or embedding_config.get("model") or DEFAULT_MODEL,
         batch_size=args.batch_size,
-        max_seq_length=args.max_seq_length,
-        device=args.device,
-        torch_dtype=args.torch_dtype,
-        trust_remote_code=args.trust_remote_code,
         normalize=args.normalize,
         prompt=args.prompt,
-        prompt_name=args.prompt_name,
         base_url=args.base_url,
         api_key=args.api_key,
+        quiet=getattr(args, "quiet", False),
     )
-    text = args.prompt + query if args.backend == "openai-compatible" and args.prompt else query
-    if args.backend == "sentence-transformers":
-        return embed_with_sentence_transformers([text], embed_args)
-    if args.backend == "openai-compatible":
-        vector = embed_with_openai_compatible([text], embed_args)
-        return normalize_rows(vector) if args.normalize else vector
-    raise ValueError(f"Unknown backend: {args.backend}")
-
-
-def embed_query_subprocess(
-    query: str, args: argparse.Namespace, embedding_config: dict[str, Any]
-):
-    try:
-        import numpy as np
-    except ImportError as error:
-        raise SystemExit(
-            "Missing dependency: numpy. Install with `pip install -e '.[pgvector]'`."
-        ) from error
-
-    model = args.model or embedding_config.get("model") or DEFAULT_MODEL
-    with tempfile.TemporaryDirectory(prefix="hep-rag-query-") as tmp_dir:
-        out_path = Path(tmp_dir) / "query.npy"
-        command = [
-            sys.executable,
-            "-m",
-            "hep_rag.embed.embed_query",
-            query,
-            "--out",
-            str(out_path),
-            "--backend",
-            args.backend,
-            "--model",
-            model,
-            "--batch-size",
-            str(args.batch_size),
-            "--max-seq-length",
-            str(args.max_seq_length),
-            "--torch-dtype",
-            args.torch_dtype,
-        ]
-        if args.device:
-            command.extend(["--device", args.device])
-        if args.prompt_name:
-            command.extend(["--prompt-name", args.prompt_name])
-        if args.prompt:
-            command.extend(["--prompt", args.prompt])
-        if not args.trust_remote_code:
-            command.append("--no-trust-remote-code")
-        if not args.normalize:
-            command.append("--no-normalize")
-        if args.backend == "openai-compatible":
-            command.extend(["--base-url", args.base_url])
-            if args.api_key:
-                command.extend(["--api-key", args.api_key])
-
-        try:
-            subprocess.run(command, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as error:
-            details = "\n".join(
-                part for part in (error.stdout.strip(), error.stderr.strip()) if part
-            )
-            message = f"Query embedding subprocess failed: {error}"
-            if details:
-                message += f"\n{details}"
-            raise SystemExit(message) from error
-        return np.load(out_path).astype("float32", copy=False)
+    vector = embed_with_openai_compatible([query], embed_args)
+    return normalize_rows(vector) if args.normalize else vector
 
 
 def rerank_hits(query: str, hits: list[SearchHit], args: argparse.Namespace) -> list[SearchHit]:
@@ -161,35 +90,36 @@ def rerank_hits(query: str, hits: list[SearchHit], args: argparse.Namespace) -> 
     if not query:
         raise SystemExit("Reranking requires query text, not only --query-vector.")
 
-    try:
-        from sentence_transformers import CrossEncoder
-    except ImportError as error:
-        raise SystemExit(
-            "Missing dependency: sentence-transformers. Install with "
-            "`pip install -e '.[embeddings,pgvector]'`."
-        ) from error
+    return rerank_hits_with_vllm(query, hits, args)
 
-    model_kwargs = sentence_transformer_model_kwargs(args.rerank_torch_dtype)
-    model = CrossEncoder(
-        args.rerank_model,
-        device=args.rerank_device or args.device,
-        trust_remote_code=args.trust_remote_code,
-        model_kwargs=model_kwargs or None,
-        max_length=args.rerank_max_length,
-        prompts={"physics": args.rerank_instruction},
-        default_prompt_name="physics",
-    )
-    pairs = [(query, hit.text) for hit in hits]
-    scores = model.predict(
-        pairs,
-        batch_size=args.rerank_batch_size,
-        show_progress_bar=bool(args.rerank_progress),
-    )
 
-    reranked = []
-    for hit, score in zip(hits, scores):
+def rerank_hits_with_vllm(
+    query: str,
+    hits: list[SearchHit],
+    args: argparse.Namespace,
+) -> list[SearchHit]:
+    payload: dict[str, Any] = {
+        "model": args.rerank_model,
+        "query": query,
+        "documents": [hit.text for hit in hits],
+        "top_n": len(hits),
+    }
+    if getattr(args, "rerank_instruction", None):
+        payload["instruction"] = args.rerank_instruction
+    if getattr(args, "rerank_max_length", None):
+        payload["truncate_prompt_tokens"] = args.rerank_max_length
+
+    body = post_json(
+        rerank_url(args),
+        payload,
+        api_key=getattr(args, "rerank_api_key", None),
+        timeout=float(getattr(args, "rerank_timeout", 120.0)),
+    )
+    scored_hits = []
+    for index, score in parse_rerank_scores(body, expected_count=len(hits)).items():
+        hit = hits[index]
         rerank_score = float(score)
-        reranked.append(
+        scored_hits.append(
             replace(
                 hit,
                 score=rerank_score,
@@ -197,8 +127,74 @@ def rerank_hits(query: str, hits: list[SearchHit], args: argparse.Namespace) -> 
                 rerank_score=rerank_score,
             )
         )
-    reranked.sort(key=lambda hit: hit.rerank_score or float("-inf"), reverse=True)
-    return [replace(hit, rank=index + 1) for index, hit in enumerate(reranked)]
+    scored_hits.sort(key=lambda hit: hit.rerank_score or float("-inf"), reverse=True)
+    return [replace(hit, rank=index + 1) for index, hit in enumerate(scored_hits)]
+
+
+def rerank_url(args: argparse.Namespace) -> str:
+    base_url = getattr(args, "rerank_base_url", DEFAULT_RERANK_BASE_URL).rstrip("/")
+    endpoint = getattr(args, "rerank_endpoint", "/rerank") or "/rerank"
+    if not endpoint.startswith("/"):
+        endpoint = "/" + endpoint
+    return base_url + endpoint
+
+
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    api_key: str | None = None,
+    timeout: float = 120.0,
+) -> dict[str, Any]:
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        raise SystemExit(f"vLLM request failed for {url}: {details}") from error
+    except urllib.error.URLError as error:
+        raise SystemExit(f"vLLM request failed for {url}: {error}") from error
+
+
+def parse_rerank_scores(body: dict[str, Any], expected_count: int) -> dict[int, float]:
+    rows = body.get("results") or body.get("data")
+    if not isinstance(rows, list):
+        raise SystemExit(
+            "Unexpected vLLM rerank response: expected a `results` or `data` list."
+        )
+
+    scores: dict[int, float] = {}
+    for default_index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise SystemExit("Unexpected vLLM rerank response: result rows must be objects.")
+        raw_index = row.get("index", row.get("corpus_id", default_index))
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError) as error:
+            raise SystemExit(f"Invalid rerank result index: {raw_index!r}") from error
+        if index < 0 or index >= expected_count:
+            raise SystemExit(f"Rerank result index out of range: {index}")
+        raw_score = (
+            row.get("relevance_score")
+            if row.get("relevance_score") is not None
+            else row.get("score")
+        )
+        if raw_score is None:
+            raise SystemExit("Unexpected vLLM rerank response: missing relevance score.")
+        scores[index] = float(raw_score)
+
+    if len(scores) != expected_count:
+        missing = sorted(set(range(expected_count)) - set(scores))
+        raise SystemExit(f"vLLM rerank response omitted scores for document indexes: {missing}")
+    return scores
 
 
 def diversify_hits(

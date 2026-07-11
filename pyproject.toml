@@ -18,14 +18,12 @@ hep-rag-build-embeddings = "hep_rag.embed.build_embeddings:main"
 hep-rag-embed-query = "hep_rag.embed.embed_query:main"
 hep-rag-pg-load = "hep_rag.search.pgvector_search:load_main"
 hep-rag-pg-search = "hep_rag.search.pgvector_search:search_main"
+hep-rag-ask = "hep_rag.qa.ask:main"
 hep-rag-eval-retrieval = "hep_rag.eval.retrieval_metrics:main"
 
 [project.optional-dependencies]
 embeddings = [
   "numpy>=1.26",
-  "sentence-transformers>=3.0",
-  "torch>=2.2",
-  "transformers>=4.51.0",
 ]
 dev = [
   "pytest>=8",

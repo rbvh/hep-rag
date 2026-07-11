@@ -10,5 +10,169 @@ services:
     volumes:
       - pgvector_data:/var/lib/postgresql/data
 
+  vllm-embedder:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.25.0}
+    ipc: host
+    ports:
+      - "8001:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    command:
+      - Qwen/Qwen3-Embedding-0.6B
+      - --runner
+      - pooling
+      - --dtype
+      - ${VLLM_EMBEDDER_DTYPE:-bfloat16}
+      - --max-model-len
+      - ${VLLM_EMBEDDER_MAX_MODEL_LEN:-512}
+      - --gpu-memory-utilization
+      - ${VLLM_EMBEDDER_GPU_MEMORY_UTILIZATION:-0.18}
+      - --enforce-eager
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  vllm-embedder-reindex:
+    profiles: [reembed]
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.25.0}
+    ipc: host
+    ports:
+      - "8001:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    command:
+      - Qwen/Qwen3-Embedding-0.6B
+      - --runner
+      - pooling
+      - --dtype
+      - ${VLLM_REINDEX_DTYPE:-bfloat16}
+      - --max-model-len
+      - ${VLLM_REINDEX_MAX_MODEL_LEN:-4096}
+      - --gpu-memory-utilization
+      - ${VLLM_REINDEX_GPU_MEMORY_UTILIZATION:-0.70}
+      - --enforce-eager
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  vllm-reranker:
+    image: hep-rag-vllm-reranker
+    build:
+      context: .
+      dockerfile: docker/vllm/reranker/Dockerfile
+      args:
+        VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.25.0}
+    ipc: host
+    depends_on:
+      vllm-embedder:
+        condition: service_healthy
+    ports:
+      - "8002:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      RERANK_MODEL: Qwen/Qwen3-Reranker-0.6B
+      RERANK_DTYPE: ${VLLM_RERANKER_DTYPE:-bfloat16}
+      RERANK_MAX_MODEL_LEN: ${VLLM_RERANKER_MAX_MODEL_LEN:-1024}
+      RERANK_GPU_MEMORY_UTILIZATION: ${VLLM_RERANKER_GPU_MEMORY_UTILIZATION:-0.22}
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  vllm-qa:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.25.0}
+    ipc: host
+    depends_on:
+      vllm-reranker:
+        condition: service_healthy
+    ports:
+      - "8003:8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    command:
+      - Qwen/Qwen3.5-0.8B
+      - --dtype
+      - ${VLLM_QA_DTYPE:-bfloat16}
+      - --max-model-len
+      - ${VLLM_QA_MAX_MODEL_LEN:-8192}
+      - --gpu-memory-utilization
+      - ${VLLM_QA_GPU_MEMORY_UTILIZATION:-0.35}
+      - --language-model-only
+      - --enforce-eager
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 120s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
 volumes:
   pgvector_data:

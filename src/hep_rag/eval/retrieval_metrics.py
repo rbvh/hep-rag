@@ -10,14 +10,14 @@ from statistics import mean
 from typing import Any
 
 from hep_rag.embed.build_embeddings import (
-    DEFAULT_MAX_SEQ_LENGTH,
     DEFAULT_MODEL,
     embed_with_openai_compatible,
-    embed_with_sentence_transformers,
     normalize_rows,
 )
 from hep_rag.search.common import (
+    DEFAULT_EMBEDDING_BASE_URL,
     DEFAULT_EMBEDDING_DIR,
+    DEFAULT_RERANK_BASE_URL,
     DEFAULT_RERANK_INSTRUCTION,
     DEFAULT_RERANK_MODEL,
     SearchHit,
@@ -278,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--rerank",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Rerank paper-representative candidates with a cross-encoder reranker.",
+        help="Rerank paper-representative candidates with the vLLM rerank endpoint.",
     )
     parser.add_argument(
         "--rerank-candidate-papers",
@@ -287,58 +287,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of unique paper representatives to rerank before scoring.",
     )
     parser.add_argument("--rerank-model", default=DEFAULT_RERANK_MODEL)
-    parser.add_argument("--rerank-batch-size", type=int, default=4)
-    parser.add_argument("--rerank-max-length", type=int, help="Optional reranker max sequence length.")
-    parser.add_argument("--rerank-device", help="Torch device for reranker. Defaults to --device.")
     parser.add_argument(
-        "--rerank-torch-dtype",
-        choices=["auto", "float32", "float16", "bfloat16"],
-        default="auto",
+        "--rerank-base-url",
+        default=DEFAULT_RERANK_BASE_URL,
+        help="Base URL for the vLLM rerank server, without the endpoint path.",
     )
+    parser.add_argument(
+        "--rerank-endpoint",
+        default="/rerank",
+        help="Rerank endpoint path on the vLLM server.",
+    )
+    parser.add_argument("--rerank-api-key", help="Bearer token for the vLLM rerank server.")
+    parser.add_argument("--rerank-timeout", type=float, default=120.0)
+    parser.add_argument("--rerank-max-length", type=int, help="Optional reranker max sequence length.")
     parser.add_argument(
         "--rerank-instruction",
         default=DEFAULT_RERANK_INSTRUCTION,
         help="Instruction prompt passed to instruction-aware rerankers.",
     )
-    parser.add_argument(
-        "--rerank-progress",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Show reranker progress bar.",
-    )
     parser.add_argument("--limit", type=int, help="Only process the first N eval rows.")
     parser.add_argument(
         "--backend",
-        choices=["sentence-transformers", "openai-compatible"],
-        default="sentence-transformers",
+        choices=["openai-compatible"],
+        default="openai-compatible",
     )
     parser.add_argument("--model", help="Query embedding model. Defaults to embedding config.")
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument(
-        "--max-seq-length",
-        type=int,
-        default=DEFAULT_MAX_SEQ_LENGTH,
-        help="SentenceTransformer max sequence length. Use 0 to keep the model default.",
-    )
-    parser.add_argument("--device", help="Torch device for sentence-transformers.")
-    parser.add_argument(
-        "--torch-dtype",
-        choices=["auto", "float32", "float16", "bfloat16"],
-        default="auto",
-    )
-    parser.add_argument(
-        "--trust-remote-code",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
     parser.add_argument(
         "--normalize",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
-    parser.add_argument("--prompt-name", default="query")
     parser.add_argument("--prompt")
-    parser.add_argument("--base-url", default="http://localhost:8000/v1")
+    parser.add_argument("--base-url", default=DEFAULT_EMBEDDING_BASE_URL)
     parser.add_argument("--api-key")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -371,31 +352,19 @@ def embed_query_vectors(
         backend=args.backend,
         model=args.model or embedding_config.get("model") or DEFAULT_MODEL,
         batch_size=args.batch_size,
-        max_seq_length=args.max_seq_length,
-        device=args.device,
-        torch_dtype=args.torch_dtype,
-        trust_remote_code=args.trust_remote_code,
         normalize=args.normalize,
         prompt=args.prompt,
-        prompt_name=args.prompt_name,
         base_url=args.base_url,
         api_key=args.api_key,
     )
     texts = [query_text_for_embedding(row["query"], embed_args) for row in eval_rows]
-    if args.backend == "sentence-transformers":
-        vectors = embed_with_sentence_transformers(texts, embed_args)
-    elif args.backend == "openai-compatible":
-        vectors = embed_with_openai_compatible(texts, embed_args)
-        if args.normalize:
-            vectors = normalize_rows(vectors)
-    else:
-        raise ValueError(f"Unknown backend: {args.backend}")
+    vectors = embed_with_openai_compatible(texts, embed_args)
+    if args.normalize:
+        vectors = normalize_rows(vectors)
     return vectors.astype("float32", copy=False)
 
 
 def query_text_for_embedding(query: str, args: argparse.Namespace) -> str:
-    if args.backend == "openai-compatible" and args.prompt:
-        return args.prompt + query
     return query
 
 

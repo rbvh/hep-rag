@@ -8,9 +8,10 @@ import os
 from pathlib import Path
 from typing import Any, Iterable
 
-from hep_rag.embed.build_embeddings import DEFAULT_MAX_SEQ_LENGTH
 from hep_rag.search.common import (
+    DEFAULT_EMBEDDING_BASE_URL,
     DEFAULT_EMBEDDING_DIR,
+    DEFAULT_RERANK_BASE_URL,
     DEFAULT_RERANK_INSTRUCTION,
     DEFAULT_RERANK_MODEL,
     SearchHit,
@@ -109,6 +110,20 @@ def load_parser() -> argparse.ArgumentParser:
 
 def search_main(argv: list[str] | None = None) -> int:
     args = search_parser().parse_args(argv)
+    query = read_query(args)
+    hits = retrieve_hits(query, args)
+    if args.json:
+        from dataclasses import asdict
+
+        print(json.dumps([asdict(hit) for hit in hits], indent=2, sort_keys=True))
+    else:
+        print(format_hits(hits, max_text_chars=args.max_text_chars))
+    return 0
+
+
+def retrieve_hits(query: str, args: argparse.Namespace) -> list[SearchHit]:
+    """Run first-stage retrieval, optional reranking, and diversification."""
+
     psycopg = import_psycopg()
     try:
         from psycopg.rows import dict_row
@@ -117,7 +132,6 @@ def search_main(argv: list[str] | None = None) -> int:
             "Missing dependency: psycopg. Install with `pip install -e '.[pgvector]'`."
         ) from error
 
-    query = read_query(args)
     query_vector = None
     if retrieval_uses_vector(args.retrieval):
         embedding_config = load_json(args.embedding_dir / "config.json")
@@ -146,14 +160,7 @@ def search_main(argv: list[str] | None = None) -> int:
     hits = pg_rows_to_hits(rows)
     if args.rerank:
         hits = rerank_hits(query, hits, args)
-    hits = diversify_hits(hits, args.top_k, args.max_chunks_per_paper)
-    if args.json:
-        from dataclasses import asdict
-
-        print(json.dumps([asdict(hit) for hit in hits], indent=2, sort_keys=True))
-    else:
-        print(format_hits(hits, max_text_chars=args.max_text_chars))
-    return 0
+    return diversify_hits(hits, args.top_k, args.max_chunks_per_paper)
 
 
 def search_parser() -> argparse.ArgumentParser:
@@ -215,62 +222,42 @@ def search_parser() -> argparse.ArgumentParser:
         "--rerank",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Rerank vector candidates with a cross-encoder reranker.",
+        help="Rerank candidates with the configured vLLM rerank endpoint.",
     )
     parser.add_argument("--rerank-model", default=DEFAULT_RERANK_MODEL)
-    parser.add_argument("--rerank-batch-size", type=int, default=4)
-    parser.add_argument("--rerank-max-length", type=int, help="Optional reranker max sequence length.")
-    parser.add_argument("--rerank-device", help="Torch device for reranker. Defaults to --device.")
     parser.add_argument(
-        "--rerank-torch-dtype",
-        choices=["auto", "float32", "float16", "bfloat16"],
-        default="auto",
+        "--rerank-base-url",
+        default=DEFAULT_RERANK_BASE_URL,
+        help="Base URL for the vLLM rerank server, without the endpoint path.",
     )
+    parser.add_argument(
+        "--rerank-endpoint",
+        default="/rerank",
+        help="Rerank endpoint path on the vLLM server.",
+    )
+    parser.add_argument("--rerank-api-key", help="Bearer token for the vLLM rerank server.")
+    parser.add_argument("--rerank-timeout", type=float, default=120.0)
+    parser.add_argument("--rerank-max-length", type=int, help="Optional reranker max sequence length.")
     parser.add_argument(
         "--rerank-instruction",
         default=DEFAULT_RERANK_INSTRUCTION,
         help="Instruction prompt passed to instruction-aware rerankers.",
     )
     parser.add_argument(
-        "--rerank-progress",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Show reranker progress bar.",
-    )
-    parser.add_argument(
-        "--embed-in-process",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Embed query in this process instead of the default subprocess.",
-    )
-    parser.add_argument(
         "--backend",
-        choices=["sentence-transformers", "openai-compatible"],
-        default="sentence-transformers",
+        choices=["openai-compatible"],
+        default="openai-compatible",
     )
     parser.add_argument("--model", help="Query embedding model. Defaults to embedding config.")
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--max-seq-length", type=int, default=DEFAULT_MAX_SEQ_LENGTH)
-    parser.add_argument("--device", help="Torch device for sentence-transformers, e.g. mps/cpu/cuda.")
-    parser.add_argument(
-        "--torch-dtype",
-        choices=["auto", "float32", "float16", "bfloat16"],
-        default="auto",
-    )
-    parser.add_argument(
-        "--trust-remote-code",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
     parser.add_argument(
         "--normalize",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="L2-normalize the query embedding before searching.",
     )
-    parser.add_argument("--prompt-name", default="query")
     parser.add_argument("--prompt")
-    parser.add_argument("--base-url", default="http://localhost:8000/v1")
+    parser.add_argument("--base-url", default=DEFAULT_EMBEDDING_BASE_URL)
     parser.add_argument("--api-key")
     return parser
 

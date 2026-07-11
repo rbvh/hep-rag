@@ -1,11 +1,9 @@
-import torch
-
 from hep_rag.embed import build_embeddings
 from hep_rag.embed.build_embeddings import (
     embedding_row,
+    embedding_input_text,
     embedding_text,
     safe_name,
-    sentence_transformer_model_kwargs,
 )
 from hep_rag.embed.embed_query import build_parser as build_query_parser
 from hep_rag.embed.embed_query import query_text
@@ -55,35 +53,40 @@ def test_safe_name_makes_model_name_path_friendly() -> None:
     assert safe_name("Qwen/Qwen3-Embedding-0.6B") == "Qwen-Qwen3-Embedding-0.6B"
 
 
-def test_sentence_transformer_model_kwargs_maps_torch_dtype() -> None:
-    assert sentence_transformer_model_kwargs("auto") == {}
-    assert sentence_transformer_model_kwargs("bfloat16") == {"torch_dtype": torch.bfloat16}
-
-
-def test_build_embeddings_defaults_are_memory_conservative() -> None:
+def test_build_embeddings_defaults_to_openai_compatible_backend() -> None:
     args = build_embeddings.build_parser().parse_args([])
 
+    assert args.backend == "openai-compatible"
     assert args.batch_size == 1
-    assert args.max_seq_length == 2048
+    assert args.truncate_prompt_tokens is None
 
 
-def test_query_parser_defaults_to_qwen_query_prompt_name() -> None:
+def test_build_embeddings_accepts_server_side_truncation() -> None:
+    args = build_embeddings.build_parser().parse_args(
+        ["--truncate-prompt-tokens", "4096"]
+    )
+
+    assert args.truncate_prompt_tokens == 4096
+
+
+def test_query_parser_defaults_to_openai_compatible_backend() -> None:
     args = build_query_parser().parse_args(["what is TMD factorization?"])
 
-    assert args.prompt_name == "query"
-    assert args.max_seq_length == 2048
+    assert args.backend == "openai-compatible"
     assert query_text(args) == "what is TMD factorization?"
 
 
-def test_openai_compatible_query_can_prepend_explicit_prompt() -> None:
+def test_query_text_keeps_prompt_separate_from_raw_query() -> None:
     args = build_query_parser().parse_args(
         [
-            "--backend",
-            "openai-compatible",
             "--prompt",
             "Instruct: retrieve relevant HEP passages\nQuery: ",
             "normalizing flows",
         ]
     )
 
-    assert query_text(args) == "Instruct: retrieve relevant HEP passages\nQuery: normalizing flows"
+    assert query_text(args) == "normalizing flows"
+    assert (
+        embedding_input_text(query_text(args), args.prompt)
+        == "Instruct: retrieve relevant HEP passages\nQuery: normalizing flows"
+    )

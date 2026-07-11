@@ -87,28 +87,26 @@ For development and tests, install:
 pip install -e ".[embeddings,pgvector,dev]"
 ```
 
-Build local Qwen embeddings for the current chunks:
+Use the long-context re-embedding mode when building corpus embeddings:
 
 ```bash
+docker compose stop vllm-qa vllm-reranker vllm-embedder
+docker compose --profile reembed up -d --wait vllm-embedder-reindex
+
 hep-rag-build-embeddings \
   --model Qwen/Qwen3-Embedding-0.6B \
-  --backend sentence-transformers \
-  --device mps \
-  --torch-dtype float16 \
-  --batch-size 1 \
-  --max-seq-length 2048
+  --batch-size 4 \
+  --truncate-prompt-tokens 4096
+
+docker compose --profile reembed stop vllm-embedder-reindex
+docker compose up -d vllm-embedder vllm-reranker vllm-qa
 ```
 
 The chunk embedding command treats chunks as retrieval documents, so it does
-not pass `prompt_name="query"` by default. Qwen recommends query prompting on
-the query side, not for document embeddings.
-
-`--torch-dtype auto` is the default and leaves dtype selection to
-SentenceTransformers/Transformers. Use `--torch-dtype bfloat16` or
-`--torch-dtype float16` to force a lower-precision model load.
-The command defaults to `--batch-size 1 --max-seq-length 2048`, which is
-intentionally conservative for long-context Qwen models on laptop hardware.
-Raise the batch size only after a small run succeeds.
+not use a query prompt by default. Qwen recommends query prompting on the query
+side, not for document embeddings. Model execution is served through vLLM's
+OpenAI-compatible HTTP API; the Python commands do not load embedding or
+reranking models into local process VRAM.
 
 Outputs are written under `data/embeddings/<model-name>/`:
 
@@ -143,13 +141,109 @@ loading and `--no-exact` when searching.
 If you already loaded an older table, rerun `hep-rag-pg-load` so the lexical
 search columns are added and populated.
 
+## vLLM RAG Services
+
+Docker Compose serves the query embedder, reranker, and QA model on one GPU:
+
+```bash
+docker compose up -d --wait postgres vllm-embedder vllm-reranker vllm-qa
+```
+
+The services expose:
+
+- `http://localhost:8001/v1/embeddings` for `Qwen/Qwen3-Embedding-0.6B`.
+- `http://localhost:8002/rerank` for `Qwen/Qwen3-Reranker-0.6B`.
+- `http://localhost:8003/v1/chat/completions` for `Qwen/Qwen3.5-0.8B`.
+
+The reranker is a small HTTP service around vLLM that follows Qwen's official
+recipe exactly: it constructs the documented instruction/query/document token
+sequence with thinking disabled, generates one token constrained to `yes` or
+`no`, and normalizes those two token log-probabilities into a relevance score.
+The search and evaluation commands use the same `/rerank` API contract as
+before.
+
+The production Compose defaults keep all three models resident while reserving
+small vLLM caches for this sequential workflow: a 512-token context and `0.18`
+GPU utilization for the query embedder, `0.22` for the reranker, and an
+8192-token context with `0.35` utilization for QA. They can be
+overridden with `VLLM_EMBEDDER_GPU_MEMORY_UTILIZATION` and
+`VLLM_RERANKER_GPU_MEMORY_UTILIZATION` or `VLLM_QA_GPU_MEMORY_UTILIZATION` when
+higher request concurrency is needed.
+
+The `reembed` profile provides a separate 4096-token embedder with a larger
+cache for corpus generation. It deliberately uses the same port as the query
+embedder, so stop the production model services before starting it. Pass
+`--truncate-prompt-tokens 4096` when building to handle oversized chunks in the
+same way as the original SentenceTransformers run.
+
+Ask a grounded question:
+
+```bash
+hep-rag-ask "How are normalizing flows used for collider event generation?"
+```
+
+The QA command performs hybrid retrieval and reranking, selects up to six
+passages, and always includes the abstract of every represented paper. It packs
+that evidence into the QA context and prints a Markdown answer followed by
+numbered paper sources. Pass `--neighbor-window 1` to include adjacent chunks,
+use `--show-context` to inspect the exact evidence sent to the model, or use
+`--json` for structured output.
+
+Build embeddings through the vLLM embedder:
+
+```bash
+hep-rag-build-embeddings \
+  --backend openai-compatible \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --batch-size 1
+```
+
+Search with vLLM query embeddings and vLLM reranking:
+
+```bash
+hep-rag-pg-search "normalizing flows for event generation" \
+  --retrieval hybrid \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --backend openai-compatible \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --prompt "Instruct: Given a physics literature search query, retrieve relevant passages that answer the query\nQuery: " \
+  --top-k 10 \
+  --candidate-k 50 \
+  --bm25-candidate-k 50 \
+  --rerank \
+  --rerank-base-url http://localhost:8002 \
+  --rerank-model Qwen/Qwen3-Reranker-0.6B
+```
+
+Run retrieval eval with the same vLLM services:
+
+```bash
+hep-rag-eval-retrieval \
+  --retrieval hybrid \
+  --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
+  --backend openai-compatible \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --prompt "Instruct: Given a physics literature search query, retrieve relevant passages that answer the query\nQuery: " \
+  --candidate-k 300 \
+  --bm25-candidate-k 300 \
+  --top-papers 40 \
+  --rerank \
+  --rerank-base-url http://localhost:8002 \
+  --rerank-model Qwen/Qwen3-Reranker-0.6B \
+  --rerank-candidate-papers 40
+```
+
 Search through Postgres:
 
 ```bash
 hep-rag-pg-search "normalizing flows for lattice gauge theory" \
   --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
-  --device mps \
-  --torch-dtype float16 \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --prompt "Instruct: Given a physics literature search query, retrieve relevant passages that answer the query\nQuery: " \
   --top-k 10 \
   --candidate-k 50 \
   --max-chunks-per-paper 2
@@ -165,8 +259,9 @@ Lexical and hybrid retrieval use Postgres full-text search:
 hep-rag-pg-search "Particle Transformer sparse attention" \
   --retrieval hybrid \
   --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
-  --device mps \
-  --torch-dtype float16 \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --prompt "Instruct: Given a physics literature search query, retrieve relevant passages that answer the query\nQuery: " \
   --top-k 10 \
   --candidate-k 300 \
   --bm25-candidate-k 300 \
@@ -181,14 +276,15 @@ Optionally rerank the top vector candidates with Qwen's reranker:
 ```bash
 hep-rag-pg-search "normalizing flows for lattice gauge theory" \
   --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
-  --device mps \
-  --torch-dtype float16 \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --prompt "Instruct: Given a physics literature search query, retrieve relevant passages that answer the query\nQuery: " \
   --top-k 10 \
   --candidate-k 50 \
   --max-chunks-per-paper 2 \
   --rerank \
-  --rerank-device mps \
-  --rerank-torch-dtype float16
+  --rerank-base-url http://localhost:8002 \
+  --rerank-model Qwen/Qwen3-Reranker-0.6B
 ```
 
 The vector score is retained in the output alongside the reranker score, which
@@ -204,8 +300,9 @@ the current retriever against those labels:
 ```bash
 hep-rag-eval-retrieval \
   --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
-  --device mps \
-  --torch-dtype float16 \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --prompt "Instruct: Given a physics literature search query, retrieve relevant passages that answer the query\nQuery: " \
   --candidate-k 3000 \
   --top-papers 40
 ```
@@ -222,14 +319,15 @@ To rerank the retrieved paper representatives:
 ```bash
 hep-rag-eval-retrieval \
   --embedding-dir data/embeddings/Qwen-Qwen3-Embedding-0.6B \
-  --device mps \
-  --torch-dtype float16 \
+  --base-url http://localhost:8001/v1 \
+  --model Qwen/Qwen3-Embedding-0.6B \
+  --prompt "Instruct: Given a physics literature search query, retrieve relevant passages that answer the query\nQuery: " \
   --candidate-k 3000 \
   --top-papers 40 \
   --rerank \
   --rerank-candidate-papers 100 \
-  --rerank-device mps \
-  --rerank-torch-dtype float16
+  --rerank-base-url http://localhost:8002 \
+  --rerank-model Qwen/Qwen3-Reranker-0.6B
 ```
 
 To smoke-test configuration without loading the model:
@@ -241,10 +339,9 @@ hep-rag-build-embeddings --limit 3 --dry-run
 If running a vLLM/OpenAI-compatible embedding server elsewhere, use:
 
 ```bash
-pip install -e ".[gpu]"
 vllm serve Qwen/Qwen3-Embedding-0.6B \
-  --task embed \
-  --dtype float16 \
+  --runner pooling \
+  --dtype bfloat16 \
   --max-model-len 4096 \
   --gpu-memory-utilization 0.85
 ```
@@ -258,21 +355,20 @@ hep-rag-build-embeddings \
   --model Qwen/Qwen3-Embedding-0.6B
 ```
 
-Embed a query locally with Qwen's default SentenceTransformer query prompt:
+Embed a query through the vLLM embedder:
 
 ```bash
 hep-rag-embed-query "What machine-learning methods reduce critical slowing down?" \
   --model Qwen/Qwen3-Embedding-0.6B \
-  --device mps \
-  --torch-dtype float16 \
+  --base-url http://localhost:8001/v1 \
+  --prompt "Instruct: Given a physics retrieval query, retrieve relevant HEP passages\nQuery: " \
   --out data/embeddings/query.npy
 ```
 
-For OpenAI-compatible or vLLM-style servers, `prompt_name` is not part of the
-HTTP embedding API, so provide an explicit instruction prefix if needed:
+For vLLM/OpenAI-compatible embedding servers, provide an explicit instruction
+prefix for query embeddings:
 
 ```bash
 hep-rag-embed-query "critical slowing down normalizing flows" \
-  --backend openai-compatible \
   --prompt "Instruct: Given a physics retrieval query, retrieve relevant HEP passages\nQuery: "
 ```

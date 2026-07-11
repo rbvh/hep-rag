@@ -18,7 +18,7 @@ from typing import Any
 DEFAULT_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_CHUNKS_PATH = Path("data/processed/chunks.jsonl")
 DEFAULT_BATCH_SIZE = 1
-DEFAULT_MAX_SEQ_LENGTH = 2048
+DEFAULT_BASE_URL = "http://localhost:8001/v1"
 
 
 @dataclass(frozen=True)
@@ -48,10 +48,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Would embed {len(chunks)} chunks")
         print(f"Backend: {args.backend}")
         print(f"Model: {args.model}")
+        print(f"Base URL: {args.base_url}")
         print(f"Batch size: {args.batch_size}")
-        print(f"Max sequence length: {args.max_seq_length or '(model default)'}")
-        print(f"Torch dtype: {args.torch_dtype}")
-        print(f"Prompt name: {args.prompt_name or '(none)'}")
+        print(f"Truncate prompt tokens: {args.truncate_prompt_tokens or '(none)'}")
         print(f"Prompt: {args.prompt or '(none)'}")
         print(f"Output directory: {out_dir}")
         if texts:
@@ -63,14 +62,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"No chunks found in {args.chunks}")
 
     started_at = time.time()
-    if args.backend == "sentence-transformers":
-        vectors = embed_with_sentence_transformers(texts, args)
-    elif args.backend == "openai-compatible":
-        vectors = embed_with_openai_compatible(texts, args)
-    else:
-        raise ValueError(f"Unknown backend: {args.backend}")
-
-    if args.normalize and args.backend == "openai-compatible":
+    vectors = embed_with_openai_compatible(texts, args)
+    if args.normalize:
         vectors = normalize_rows(vectors)
 
     rows = [embedding_row(index, chunk, text) for index, (chunk, text) in enumerate(zip(chunks, texts))]
@@ -81,16 +74,15 @@ def main(argv: list[str] | None = None) -> int:
         config={
             "backend": args.backend,
             "model": args.model,
-            "torch_dtype": args.torch_dtype,
+            "base_url": args.base_url,
             "chunks_path": str(args.chunks),
             "count": len(rows),
             "dimension": int(vectors.shape[1]),
             "normalize": args.normalize,
             "include_metadata_context": args.include_metadata_context,
             "batch_size": args.batch_size,
-            "max_seq_length": args.max_seq_length,
+            "truncate_prompt_tokens": args.truncate_prompt_tokens,
             "prompt": args.prompt,
-            "prompt_name": args.prompt_name,
             "elapsed_seconds": round(time.time() - started_at, 3),
         },
     )
@@ -123,43 +115,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=["sentence-transformers", "openai-compatible"],
-        default="sentence-transformers",
-        help="Embedding backend.",
+        choices=["openai-compatible"],
+        default="openai-compatible",
+        help="Embedding backend. Only OpenAI-compatible HTTP/vLLM serving is supported.",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=DEFAULT_BATCH_SIZE,
-        help=(
-            "Embedding batch size. The default is conservative because long-context "
-            "Qwen attention masks can otherwise require many GiB on laptop devices."
-        ),
-    )
-    parser.add_argument(
-        "--max-seq-length",
-        type=int,
-        default=DEFAULT_MAX_SEQ_LENGTH,
-        help=(
-            "SentenceTransformer max sequence length. Use 0 to keep the model default."
-        ),
+        help="Embedding request batch size sent to the HTTP server.",
     )
     parser.add_argument("--limit", type=int, help="Embed at most this many chunks.")
-    parser.add_argument("--device", help="Torch device for sentence-transformers, e.g. mps/cpu/cuda.")
     parser.add_argument(
-        "--torch-dtype",
-        choices=["auto", "float32", "float16", "bfloat16"],
-        default="auto",
-        help=(
-            "Torch dtype passed to the underlying Transformers model for the "
-            "sentence-transformers backend. `auto` leaves the library default."
-        ),
-    )
-    parser.add_argument(
-        "--trust-remote-code",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Pass trust_remote_code to SentenceTransformer.",
+        "--truncate-prompt-tokens",
+        type=int,
+        help="Ask the embedding server to truncate inputs to this many tokens.",
     )
     parser.add_argument(
         "--normalize",
@@ -176,21 +146,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prompt",
         help=(
-            "Optional prompt string passed to SentenceTransformer.encode. "
-            "Usually leave unset when embedding corpus chunks."
-        ),
-    )
-    parser.add_argument(
-        "--prompt-name",
-        help=(
-            "Optional prompt name passed to SentenceTransformer.encode. "
-            "For Qwen retrieval, use query prompting for queries, not corpus documents."
+            "Optional prefix prepended to each input before sending it to the "
+            "OpenAI-compatible embedding endpoint."
         ),
     )
     parser.add_argument(
         "--base-url",
-        default="http://localhost:8000/v1",
-        help="OpenAI-compatible base URL for the openai-compatible backend.",
+        default=DEFAULT_BASE_URL,
+        help="OpenAI-compatible base URL for the embedding server.",
     )
     parser.add_argument(
         "--api-key",
@@ -243,65 +206,6 @@ def embedding_text(chunk: dict[str, Any], include_metadata_context: bool = True)
     return "\n".join([*context_lines, "", text])
 
 
-def embed_with_sentence_transformers(texts: list[str], args: argparse.Namespace):
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as error:
-        raise SystemExit(
-            "Missing dependency: sentence-transformers. Install with "
-            "`pip install -e '.[embeddings]'` inside the conda env."
-        ) from error
-
-    model_kwargs: dict[str, Any] = {"trust_remote_code": args.trust_remote_code}
-    if args.device:
-        model_kwargs["device"] = args.device
-    hf_model_kwargs = sentence_transformer_model_kwargs(args.torch_dtype)
-    if hf_model_kwargs:
-        model_kwargs["model_kwargs"] = hf_model_kwargs
-
-    model = SentenceTransformer(args.model, **model_kwargs)
-    if args.max_seq_length:
-        model.max_seq_length = args.max_seq_length
-    encode_kwargs: dict[str, Any] = {
-        "batch_size": args.batch_size,
-        "convert_to_numpy": True,
-        "normalize_embeddings": args.normalize,
-        "show_progress_bar": True,
-    }
-    if args.prompt:
-        encode_kwargs["prompt"] = args.prompt
-    if args.prompt_name:
-        encode_kwargs["prompt_name"] = args.prompt_name
-    if args.max_seq_length:
-        encode_kwargs["processing_kwargs"] = {
-            "text": {
-                "max_length": args.max_seq_length,
-                "truncation": "longest_first",
-            }
-        }
-    return model.encode(texts, **encode_kwargs)
-
-
-def sentence_transformer_model_kwargs(torch_dtype: str) -> dict[str, Any]:
-    if torch_dtype == "auto":
-        return {}
-
-    try:
-        import torch
-    except ImportError as error:
-        raise SystemExit(
-            "Missing dependency: torch. Install with "
-            "`pip install -e '.[embeddings]'` inside the conda env."
-        ) from error
-
-    dtype_by_name = {
-        "float32": torch.float32,
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-    }
-    return {"torch_dtype": dtype_by_name[torch_dtype]}
-
-
 def embed_with_openai_compatible(texts: list[str], args: argparse.Namespace):
     try:
         import numpy as np
@@ -314,8 +218,13 @@ def embed_with_openai_compatible(texts: list[str], args: argparse.Namespace):
     embeddings: list[list[float]] = []
     url = args.base_url.rstrip("/") + "/embeddings"
     for start in range(0, len(texts), args.batch_size):
-        batch = texts[start : start + args.batch_size]
-        payload = json.dumps({"model": args.model, "input": batch}).encode("utf-8")
+        batch = [embedding_input_text(text, args.prompt) for text in texts[start : start + args.batch_size]]
+        payload_body: dict[str, Any] = {"model": args.model, "input": batch}
+        truncate_prompt_tokens = getattr(args, "truncate_prompt_tokens", None)
+        if truncate_prompt_tokens is not None:
+            payload_body["truncate_prompt_tokens"] = truncate_prompt_tokens
+            payload_body["truncation_side"] = "right"
+        payload = json.dumps(payload_body).encode("utf-8")
         request = urllib.request.Request(
             url,
             data=payload,
@@ -330,8 +239,13 @@ def embed_with_openai_compatible(texts: list[str], args: argparse.Namespace):
 
         batch_data = sorted(body["data"], key=lambda item: item.get("index", 0))
         embeddings.extend(item["embedding"] for item in batch_data)
-        print(f"Embedded {min(start + len(batch), len(texts))}/{len(texts)}")
+        if not getattr(args, "quiet", False):
+            print(f"Embedded {min(start + len(batch), len(texts))}/{len(texts)}")
     return np.asarray(embeddings, dtype="float32")
+
+
+def embedding_input_text(text: str, prompt: str | None = None) -> str:
+    return f"{prompt}{text}" if prompt else text
 
 
 def openai_compatible_headers(api_key: str | None) -> dict[str, str]:

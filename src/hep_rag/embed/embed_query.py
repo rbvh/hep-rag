@@ -8,10 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from hep_rag.embed.build_embeddings import (
-    DEFAULT_MAX_SEQ_LENGTH,
+    DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     embed_with_openai_compatible,
-    embed_with_sentence_transformers,
     normalize_rows,
 )
 
@@ -24,23 +23,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         print(f"Would embed query with backend: {args.backend}")
         print(f"Model: {args.model}")
+        print(f"Base URL: {args.base_url}")
         print(f"Batch size: {args.batch_size}")
-        print(f"Max sequence length: {args.max_seq_length or '(model default)'}")
-        print(f"Torch dtype: {args.torch_dtype}")
-        print(f"Prompt name: {args.prompt_name or '(none)'}")
         print(f"Prompt: {args.prompt or '(none)'}")
         print("Query text:")
         print(query)
         return 0
 
-    if args.backend == "sentence-transformers":
-        vector = embed_with_sentence_transformers(texts, args)
-    elif args.backend == "openai-compatible":
-        vector = embed_with_openai_compatible(texts, args)
-        if args.normalize:
-            vector = normalize_rows(vector)
-    else:
-        raise ValueError(f"Unknown backend: {args.backend}")
+    vector = embed_with_openai_compatible(texts, args)
+    if args.normalize:
+        vector = normalize_rows(vector)
 
     if args.out:
         write_vector(args.out, vector)
@@ -51,7 +43,6 @@ def main(argv: list[str] | None = None) -> int:
         "model": args.model,
         "backend": args.backend,
         "prompt": args.prompt,
-        "prompt_name": args.prompt_name,
         "query": query,
         "dimension": int(vector.shape[1]),
         "embedding": vector[0].astype(float).tolist(),
@@ -68,55 +59,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--backend",
-        choices=["sentence-transformers", "openai-compatible"],
-        default="sentence-transformers",
+        choices=["openai-compatible"],
+        default="openai-compatible",
     )
     parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument(
-        "--max-seq-length",
-        type=int,
-        default=DEFAULT_MAX_SEQ_LENGTH,
-        help="SentenceTransformer max sequence length. Use 0 to keep the model default.",
-    )
-    parser.add_argument("--device", help="Torch device for sentence-transformers, e.g. mps/cpu/cuda.")
-    parser.add_argument(
-        "--torch-dtype",
-        choices=["auto", "float32", "float16", "bfloat16"],
-        default="auto",
-        help=(
-            "Torch dtype passed to the underlying Transformers model for the "
-            "sentence-transformers backend. `auto` leaves the library default."
-        ),
-    )
-    parser.add_argument(
-        "--trust-remote-code",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
     parser.add_argument(
         "--normalize",
         action=argparse.BooleanOptionalAction,
         default=True,
     )
     parser.add_argument(
-        "--prompt-name",
-        default="query",
-        help=(
-            "SentenceTransformer prompt name. Qwen recommends query prompting for "
-            "queries and no prompt for retrieval documents."
-        ),
-    )
-    parser.add_argument(
         "--prompt",
         help=(
-            "Explicit prompt string. For OpenAI-compatible/vLLM backends, this is "
-            "prepended to the query text because prompt_name is SentenceTransformer-specific."
+            "Explicit prompt string prepended to the query text before sending it "
+            "to the OpenAI-compatible embedding endpoint."
         ),
     )
     parser.add_argument(
         "--base-url",
-        default="http://localhost:8000/v1",
-        help="OpenAI-compatible base URL for the openai-compatible backend.",
+        default=DEFAULT_BASE_URL,
+        help="OpenAI-compatible base URL for the embedding server.",
     )
     parser.add_argument(
         "--api-key",
@@ -134,8 +96,6 @@ def query_text(args: argparse.Namespace) -> str:
     else:
         raise SystemExit("Provide query text as an argument or with --query-file.")
 
-    if args.backend == "openai-compatible" and args.prompt:
-        return args.prompt + text
     return text
 
 

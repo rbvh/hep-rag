@@ -1,12 +1,12 @@
 import pytest
-import sys
-import types
 from argparse import Namespace
 
+import hep_rag.search.common as search_common
 from hep_rag.search.common import (
     SearchHit,
     diversify_hits,
     format_hits,
+    parse_rerank_scores,
     read_query,
     rerank_hits,
 )
@@ -48,22 +48,18 @@ def test_read_query_requires_query_text() -> None:
 
 
 def test_rerank_hits_sorts_by_reranker_score(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeCrossEncoder:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        def predict(self, pairs, **kwargs):
-            assert pairs == [
-                ("query", "less relevant"),
-                ("query", "more relevant"),
+    def fake_post_json(url, payload, api_key=None, timeout=120.0):
+        assert url == "http://reranker/rerank"
+        assert payload["query"] == "query"
+        assert payload["documents"] == ["less relevant", "more relevant"]
+        return {
+            "results": [
+                {"index": 0, "relevance_score": 0.1},
+                {"index": 1, "relevance_score": 2.0},
             ]
-            return [0.1, 2.0]
+        }
 
-    monkeypatch.setitem(
-        sys.modules,
-        "sentence_transformers",
-        types.SimpleNamespace(CrossEncoder=FakeCrossEncoder),
-    )
+    monkeypatch.setattr(search_common, "post_json", fake_post_json)
     hits = [
         SearchHit(
             rank=1,
@@ -98,14 +94,12 @@ def test_rerank_hits_sorts_by_reranker_score(monkeypatch: pytest.MonkeyPatch) ->
     ]
     args = Namespace(
         rerank_model="fake-reranker",
-        rerank_device=None,
-        device=None,
-        trust_remote_code=True,
-        rerank_torch_dtype="auto",
+        rerank_base_url="http://reranker",
+        rerank_endpoint="/rerank",
+        rerank_api_key=None,
+        rerank_timeout=120.0,
         rerank_max_length=None,
         rerank_instruction="judge relevance",
-        rerank_batch_size=4,
-        rerank_progress=False,
     )
 
     reranked = rerank_hits("query", hits, args)
@@ -115,6 +109,39 @@ def test_rerank_hits_sorts_by_reranker_score(monkeypatch: pytest.MonkeyPatch) ->
     assert reranked[0].score == 2.0
     assert reranked[0].vector_score == 0.8
     assert reranked[0].rerank_score == 2.0
+
+
+def test_parse_rerank_scores_accepts_vllm_results_response() -> None:
+    scores = parse_rerank_scores(
+        {
+            "results": [
+                {"index": 1, "relevance_score": 0.25},
+                {"index": 0, "relevance_score": 0.75},
+            ]
+        },
+        expected_count=2,
+    )
+
+    assert scores == {0: 0.75, 1: 0.25}
+
+
+def test_parse_rerank_scores_accepts_data_response() -> None:
+    scores = parse_rerank_scores(
+        {
+            "data": [
+                {"index": 0, "score": -1.0},
+                {"index": 1, "score": 3.5},
+            ]
+        },
+        expected_count=2,
+    )
+
+    assert scores == {0: -1.0, 1: 3.5}
+
+
+def test_parse_rerank_scores_rejects_missing_scores() -> None:
+    with pytest.raises(SystemExit):
+        parse_rerank_scores({"results": [{"index": 0, "relevance_score": 1.0}]}, 2)
 
 
 def test_diversify_hits_limits_chunks_per_paper() -> None:
