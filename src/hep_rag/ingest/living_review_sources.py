@@ -104,19 +104,6 @@ def main(argv: list[str] | None = None) -> int:
             if index < len(selected) and args.sleep > 0:
                 time.sleep(args.sleep)
 
-        if args.record_skipped:
-            selected_keys = {entry.key for entry in selected}
-            for entry in entries:
-                if entry.key in selected_keys or arxiv_id_from_entry(entry):
-                    continue
-                record = source_record_for_entry(
-                    entry,
-                    status="skipped_no_arxiv_id",
-                    source_url=None,
-                    category_index=category_index,
-                )
-                manifest.write(json.dumps(asdict(record), sort_keys=True) + "\n")
-
     write_summary(records, out_dir / "summary.json")
     return 0
 
@@ -181,11 +168,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Number of entries to show in dry-run mode.",
     )
-    parser.add_argument(
-        "--record-skipped",
-        action="store_true",
-        help="Append non-arXiv bibliography entries to the manifest as skipped.",
-    )
     return parser
 
 
@@ -228,12 +210,7 @@ def download_entry_source(
 ) -> SourceRecord:
     arxiv_id = arxiv_id_from_entry(entry)
     if arxiv_id is None:
-        return source_record_for_entry(
-            entry,
-            status="skipped_no_arxiv_id",
-            source_url=None,
-            category_index=category_index,
-        )
+        raise ValueError(f"BibTeX entry {entry.key!r} has no valid arXiv identifier")
 
     source_url = ARXIV_SOURCE_URL.format(arxiv_id=arxiv_id)
     paper_dir = out_dir / "sources" / safe_id(arxiv_id)
