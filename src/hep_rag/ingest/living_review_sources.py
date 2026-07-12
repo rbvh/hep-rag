@@ -22,7 +22,6 @@ from hep_rag.ingest.living_review_categories import (
     parse_living_review_categories,
 )
 
-
 LIVING_REVIEW_BIB_URL = (
     "https://raw.githubusercontent.com/iml-wg/HEPML-LivingReview/master/HEPML.bib"
 )
@@ -31,9 +30,7 @@ LIVING_REVIEW_TEX_URL = (
 )
 DEFAULT_USER_AGENT = "hep-rag-lab/0.1 (mailto:replace-with-your-email@example.com)"
 ARXIV_SOURCE_URL = "https://arxiv.org/e-print/{arxiv_id}"
-ARXIV_ID_RE = re.compile(
-    r"^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?$"
-)
+ARXIV_ID_RE = re.compile(r"^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?$")
 
 
 @dataclass(frozen=True)
@@ -192,9 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_bibliography(
-    bib_path: Path | None, bib_url: str, user_agent: str
-) -> str:
+def load_bibliography(bib_path: Path | None, bib_url: str, user_agent: str) -> str:
     if bib_path is not None:
         return bib_path.read_text(encoding="utf-8")
 
@@ -203,9 +198,7 @@ def load_bibliography(
         return response.read().decode("utf-8")
 
 
-def load_living_review_tex(
-    tex_path: Path | None, tex_url: str, user_agent: str
-) -> str:
+def load_living_review_tex(tex_path: Path | None, tex_url: str, user_agent: str) -> str:
     if tex_path is not None:
         return tex_path.read_text(encoding="utf-8")
 
@@ -292,10 +285,12 @@ def download_entry_source(
 
 def download_source_archive(source_url: str, paper_dir: Path, user_agent: str) -> Path:
     request = urllib.request.Request(source_url, headers={"User-Agent": user_agent})
-    with urllib.request.urlopen(request, timeout=120) as response:
-        with NamedTemporaryFile("wb", dir=paper_dir, delete=False) as temp_file:
-            shutil.copyfileobj(response, temp_file)
-            temp_path = Path(temp_file.name)
+    with (
+        urllib.request.urlopen(request, timeout=120) as response,
+        NamedTemporaryFile("wb", dir=paper_dir, delete=False) as temp_file,
+    ):
+        shutil.copyfileobj(response, temp_file)
+        temp_path = Path(temp_file.name)
 
     kind = detect_source_kind(temp_path)
     target_path = paper_dir / filename_for_kind(kind)

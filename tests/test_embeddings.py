@@ -1,7 +1,7 @@
 from hep_rag.embed import build_embeddings
 from hep_rag.embed.build_embeddings import (
-    embedding_row,
     embedding_input_text,
+    embedding_row,
     embedding_text,
     safe_name,
 )
@@ -62,9 +62,7 @@ def test_build_embeddings_defaults_to_openai_compatible_backend() -> None:
 
 
 def test_build_embeddings_accepts_server_side_truncation() -> None:
-    args = build_embeddings.build_parser().parse_args(
-        ["--truncate-prompt-tokens", "4096"]
-    )
+    args = build_embeddings.build_parser().parse_args(["--truncate-prompt-tokens", "4096"])
 
     assert args.truncate_prompt_tokens == 4096
 

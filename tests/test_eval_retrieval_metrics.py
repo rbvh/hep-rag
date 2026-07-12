@@ -1,13 +1,7 @@
-from hep_rag.eval.retrieval_metrics import (
-    PaperCandidate,
-    aggregate_metrics,
-    average_precision_for_ranks,
-    build_parser,
-    collapse_hits_by_paper,
-    render_markdown,
-    representative_hits_by_paper,
-    score_query,
-)
+from hep_rag.eval.metrics import aggregate_metrics, average_precision_for_ranks, score_query
+from hep_rag.eval.models import PaperCandidate
+from hep_rag.eval.report import render_markdown
+from hep_rag.eval.runner import build_parser, collapse_hits_by_paper, unique_paper_hits
 from hep_rag.search.common import SearchHit
 
 
@@ -15,7 +9,7 @@ def candidate(rank: int, paper_id: str) -> PaperCandidate:
     return PaperCandidate(
         paper_rank=rank,
         hit_rank=rank,
-        score=1.0 / rank,
+        final_score=1.0 / rank,
         paper_id=paper_id,
         title=f"Title {paper_id}",
         living_review_categories=[],
@@ -29,7 +23,7 @@ def candidate(rank: int, paper_id: str) -> PaperCandidate:
 def hit(rank: int, paper_id: str, score: float) -> SearchHit:
     return SearchHit(
         rank=rank,
-        score=score,
+        final_score=score,
         chunk_id=f"{paper_id}:chunk:{rank:05d}:abc",
         paper_id=paper_id,
         title=f"Title {paper_id}",
@@ -50,7 +44,7 @@ def test_collapse_hits_by_paper_keeps_best_first_hit_per_paper() -> None:
             hit(2, "paper-a", 0.8),
             hit(3, "paper-b", 0.7),
         ],
-        top_papers=10,
+        limit=10,
     )
 
     assert [candidate.paper_id for candidate in candidates] == ["paper-a", "paper-b"]
@@ -61,20 +55,20 @@ def test_collapse_hits_by_paper_keeps_best_first_hit_per_paper() -> None:
 def test_collapse_hits_by_paper_limits_unique_papers() -> None:
     candidates = collapse_hits_by_paper(
         [hit(1, "paper-a", 0.9), hit(2, "paper-b", 0.8)],
-        top_papers=1,
+        limit=1,
     )
 
     assert [candidate.paper_id for candidate in candidates] == ["paper-a"]
 
 
 def test_representative_hits_by_paper_keeps_first_hit_per_paper() -> None:
-    representatives = representative_hits_by_paper(
+    representatives = unique_paper_hits(
         [
             hit(1, "paper-a", 0.9),
             hit(2, "paper-a", 0.8),
             hit(3, "paper-b", 0.7),
         ],
-        max_papers=10,
+        limit=10,
     )
 
     assert [hit.paper_id for hit in representatives] == ["paper-a", "paper-b"]
@@ -82,9 +76,9 @@ def test_representative_hits_by_paper_keeps_first_hit_per_paper() -> None:
 
 
 def test_representative_hits_by_paper_limits_papers() -> None:
-    representatives = representative_hits_by_paper(
+    representatives = unique_paper_hits(
         [hit(1, "paper-a", 0.9), hit(2, "paper-b", 0.8)],
-        max_papers=1,
+        limit=1,
     )
 
     assert [hit.paper_id for hit in representatives] == ["paper-a"]
@@ -92,9 +86,9 @@ def test_representative_hits_by_paper_limits_papers() -> None:
 
 def test_representative_hits_by_paper_rejects_non_positive_limit() -> None:
     try:
-        representative_hits_by_paper([], max_papers=0)
-    except SystemExit as error:
-        assert "--rerank-candidate-papers" in str(error)
+        unique_paper_hits([], limit=0)
+    except ValueError as error:
+        assert "paper limit" in str(error)
     else:
         raise AssertionError("Expected invalid rerank candidate count to stop cleanly")
 
@@ -104,7 +98,7 @@ def test_parser_defaults_to_vector_without_rerank() -> None:
 
     assert args.retrieval == "vector"
     assert args.rerank is False
-    assert args.rerank_candidate_papers == 100
+    assert args.candidate_k == 300
 
 
 def test_average_precision_for_ranks() -> None:

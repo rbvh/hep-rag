@@ -14,10 +14,7 @@ from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from vllm.inputs import TokensPrompt
 
-
-DEFAULT_INSTRUCTION = (
-    "Given a web search query, retrieve relevant passages that answer the query"
-)
+DEFAULT_INSTRUCTION = "Given a web search query, retrieve relevant passages that answer the query"
 SYSTEM_PROMPT = (
     "Judge whether the Document meets the requirements based on the Query and the "
     'Instruct provided. Note that the answer can only be "yes" or "no".'
@@ -66,11 +63,7 @@ class Qwen3Reranker:
         return token_ids[0]
 
     def _prompt(self, instruction: str, query: str, document: str, max_length: int) -> TokensPrompt:
-        text = (
-            f"{PREFIX}<Instruct>: {instruction}\n\n"
-            f"<Query>: {query}\n\n"
-            f"<Document>: {document}"
-        )
+        text = f"{PREFIX}<Instruct>: {instruction}\n\n<Query>: {query}\n\n<Document>: {document}"
         token_ids = self.tokenizer.encode(text, add_special_tokens=False)
         content_limit = max_length - len(self.suffix_tokens)
         if content_limit < 1:
@@ -87,10 +80,7 @@ class Qwen3Reranker:
         requested_max_length: int | None,
     ) -> tuple[list[float], int]:
         max_length = min(requested_max_length or self.max_model_len, self.max_model_len)
-        prompts = [
-            self._prompt(instruction, query, document, max_length)
-            for document in documents
-        ]
+        prompts = [self._prompt(instruction, query, document, max_length) for document in documents]
         prompt_tokens = sum(len(prompt["prompt_token_ids"]) for prompt in prompts)
         with self._lock:
             outputs = self.model.generate(prompts, self.sampling_params, use_tqdm=False)
@@ -134,8 +124,7 @@ def rerank(request: RerankRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"This service has {active_reranker.model_name!r} loaded, "
-                f"not {request.model!r}"
+                f"This service has {active_reranker.model_name!r} loaded, not {request.model!r}"
             ),
         )
     if request.top_n is not None and request.top_n > len(request.documents):

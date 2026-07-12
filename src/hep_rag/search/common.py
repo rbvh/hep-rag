@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import urllib.error
 import urllib.request
@@ -10,28 +9,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from hep_rag.embed.build_embeddings import (
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL,
-    default_out_dir,
-    embed_with_openai_compatible,
-    normalize_rows,
-)
-
-
-DEFAULT_EMBEDDING_DIR = default_out_dir(DEFAULT_MODEL)
-DEFAULT_EMBEDDING_BASE_URL = DEFAULT_BASE_URL
-DEFAULT_RERANK_MODEL = "Qwen/Qwen3-Reranker-0.6B"
-DEFAULT_RERANK_INSTRUCTION = (
-    "Given a physics literature search query, retrieve relevant passages that answer the query"
-)
-DEFAULT_RERANK_BASE_URL = "http://localhost:8002"
+from hep_rag.embed.build_embeddings import embed_with_openai_compatible, normalize_rows
+from hep_rag.search.config import EmbeddingConfig, RerankConfig
 
 
 @dataclass(frozen=True)
 class SearchHit:
     rank: int
-    score: float
+    final_score: float
     chunk_id: str
     paper_id: str
     title: str | None
@@ -47,73 +32,56 @@ class SearchHit:
     rerank_score: float | None = None
 
 
-def read_query(args: argparse.Namespace) -> str:
-    if getattr(args, "query_vector", None):
-        return args.query.strip() if args.query else ""
-    if args.query_file:
-        return args.query_file.read_text(encoding="utf-8").strip()
-    if args.query:
-        return args.query.strip()
-    raise SystemExit("Provide query text as an argument or with --query-file.")
+def embed_queries(queries: list[str], config: EmbeddingConfig):
+    from argparse import Namespace
 
-
-def embed_query(query: str, args: argparse.Namespace, embedding_config: dict[str, Any]):
-    if args.query_vector:
-        try:
-            import numpy as np
-        except ImportError as error:
-            raise SystemExit(
-                "Missing dependency: numpy. Install with `pip install -e '.[pgvector]'`."
-            ) from error
-        vector = np.load(args.query_vector).astype("float32", copy=False)
-        if vector.ndim == 1:
-            vector = vector.reshape(1, -1)
-        return vector
-
-    embed_args = argparse.Namespace(
-        backend=args.backend,
-        model=args.model or embedding_config.get("model") or DEFAULT_MODEL,
-        batch_size=args.batch_size,
-        normalize=args.normalize,
-        prompt=args.prompt,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        quiet=getattr(args, "quiet", False),
+    request = Namespace(
+        model=config.model,
+        batch_size=config.batch_size,
+        prompt=config.prompt,
+        base_url=config.base_url,
+        api_key=config.api_key,
+        quiet=True,
+        truncate_prompt_tokens=None,
     )
-    vector = embed_with_openai_compatible([query], embed_args)
-    return normalize_rows(vector) if args.normalize else vector
+    vectors = embed_with_openai_compatible(queries, request)
+    return normalize_rows(vectors) if config.normalize else vectors
 
 
-def rerank_hits(query: str, hits: list[SearchHit], args: argparse.Namespace) -> list[SearchHit]:
+def rerank_hits(
+    query: str,
+    hits: list[SearchHit],
+    config: RerankConfig,
+) -> list[SearchHit]:
     if not hits:
         return []
     if not query:
         raise SystemExit("Reranking requires query text, not only --query-vector.")
 
-    return rerank_hits_with_vllm(query, hits, args)
+    return rerank_hits_with_vllm(query, hits, config)
 
 
 def rerank_hits_with_vllm(
     query: str,
     hits: list[SearchHit],
-    args: argparse.Namespace,
+    config: RerankConfig,
 ) -> list[SearchHit]:
     payload: dict[str, Any] = {
-        "model": args.rerank_model,
+        "model": config.model,
         "query": query,
         "documents": [hit.text for hit in hits],
         "top_n": len(hits),
     }
-    if getattr(args, "rerank_instruction", None):
-        payload["instruction"] = args.rerank_instruction
-    if getattr(args, "rerank_max_length", None):
-        payload["truncate_prompt_tokens"] = args.rerank_max_length
+    if config.instruction:
+        payload["instruction"] = config.instruction
+    if config.max_length:
+        payload["truncate_prompt_tokens"] = config.max_length
 
     body = post_json(
-        rerank_url(args),
+        rerank_url(config),
         payload,
-        api_key=getattr(args, "rerank_api_key", None),
-        timeout=float(getattr(args, "rerank_timeout", 120.0)),
+        api_key=config.api_key,
+        timeout=config.timeout,
     )
     scored_hits = []
     for index, score in parse_rerank_scores(body, expected_count=len(hits)).items():
@@ -122,8 +90,7 @@ def rerank_hits_with_vllm(
         scored_hits.append(
             replace(
                 hit,
-                score=rerank_score,
-                vector_score=hit.vector_score if hit.vector_score is not None else hit.score,
+                final_score=rerank_score,
                 rerank_score=rerank_score,
             )
         )
@@ -131,9 +98,9 @@ def rerank_hits_with_vllm(
     return [replace(hit, rank=index + 1) for index, hit in enumerate(scored_hits)]
 
 
-def rerank_url(args: argparse.Namespace) -> str:
-    base_url = getattr(args, "rerank_base_url", DEFAULT_RERANK_BASE_URL).rstrip("/")
-    endpoint = getattr(args, "rerank_endpoint", "/rerank") or "/rerank"
+def rerank_url(config: RerankConfig) -> str:
+    base_url = config.base_url.rstrip("/")
+    endpoint = config.endpoint or "/rerank"
     if not endpoint.startswith("/"):
         endpoint = "/" + endpoint
     return base_url + endpoint
@@ -167,9 +134,7 @@ def post_json(
 def parse_rerank_scores(body: dict[str, Any], expected_count: int) -> dict[int, float]:
     rows = body.get("results") or body.get("data")
     if not isinstance(rows, list):
-        raise SystemExit(
-            "Unexpected vLLM rerank response: expected a `results` or `data` list."
-        )
+        raise SystemExit("Unexpected vLLM rerank response: expected a `results` or `data` list.")
 
     scores: dict[int, float] = {}
     for default_index, row in enumerate(rows):
@@ -219,42 +184,6 @@ def diversify_hits(
             paper_counts[hit.paper_id] = count + 1
         selected.append(hit)
     return [replace(hit, rank=index + 1) for index, hit in enumerate(selected)]
-
-
-def format_hits(hits: list[SearchHit], max_text_chars: int = 900) -> str:
-    blocks = []
-    for hit in hits:
-        section = " > ".join(hit.section_path) if hit.section_path else "(no section)"
-        categories = "; ".join(" > ".join(category) for category in hit.living_review_categories)
-        text = hit.text.strip()
-        if len(text) > max_text_chars:
-            text = text[: max_text_chars - 1].rstrip() + "..."
-        lines = [
-            f"## {hit.rank}. {hit.chunk_id}",
-            f"Score: {hit.score:.4f}",
-        ]
-        if hit.rerank_score is not None:
-            lines.append(f"Rerank score: {hit.rerank_score:.4f}")
-        if hit.vector_score is not None:
-            lines.append(f"Vector score: {hit.vector_score:.4f}")
-        if hit.lexical_score is not None:
-            lines.append(f"Lexical score: {hit.lexical_score:.4f}")
-        if hit.rrf_score is not None:
-            lines.append(f"RRF score: {hit.rrf_score:.4f}")
-        lines.extend(
-            [
-                f"Paper: {hit.paper_id}",
-                f"Title: {hit.title or '(unknown)'}",
-                f"Section: {section}",
-            ]
-        )
-        if categories:
-            lines.append(f"Categories: {categories}")
-        if hit.source_url:
-            lines.append(f"Source: {hit.source_url}")
-        lines.extend(["", text])
-        blocks.append("\n".join(lines))
-    return "\n\n".join(blocks)
 
 
 def load_json(path: Path) -> dict[str, Any]:

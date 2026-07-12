@@ -30,6 +30,7 @@ def test_parse_nested_living_review_categories() -> None:
         ["Classification", "Representations", "Sets (point clouds)"],
     ]
     assert index.paths_for_key("AnomalyPaper:2022abc") == [["Anomaly detection"]]
-    assert index.descriptions_by_path[
-        ("Classification", "Representations", "Graphs")
-    ] == "A graph is a collection of nodes and edges."
+    assert (
+        index.descriptions_by_path[("Classification", "Representations", "Graphs")]
+        == "A graph is a collection of nodes and edges."
+    )

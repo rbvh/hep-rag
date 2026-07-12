@@ -7,7 +7,6 @@ import re
 
 from hep_rag.ingest.schema import ParsedPaper, ParsedParagraph, TextChunk
 
-
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
 DISPLAY_MATH_RE = re.compile(
     r"\\begin\{(?:equation\*?|align\*?|eqnarray\*?|gather\*?|multline\*?|split)\}"
@@ -109,9 +108,7 @@ def make_chunk(
     )
 
 
-def stable_chunk_id(
-    paper_id: str, section_path: list[str], chunk_index: int, text: str
-) -> str:
+def stable_chunk_id(paper_id: str, section_path: list[str], chunk_index: int, text: str) -> str:
     payload = "\n".join([paper_id, "/".join(section_path), str(chunk_index), text[:500]])
     digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
     return f"{paper_id}:chunk:{chunk_index:05d}:{digest}"

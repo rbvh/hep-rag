@@ -3,7 +3,7 @@ from hep_rag.ingest.living_review_sources import arxiv_id_from_entry
 
 
 def test_parse_multiline_bibtex_entry() -> None:
-    text = r'''
+    text = r"""
 @article{Bothmann:2026dar,
     author = "Bothmann, Enrico and Jan{\ss}en, Timo",
     title = "{Monte Carlo Event Generation with Continuous Normalizing Flows}",
@@ -14,7 +14,7 @@ def test_parse_multiline_bibtex_entry() -> None:
     month = "4",
     year = "2026"
 }
-'''
+"""
 
     entries = parse_bibtex(text)
 
@@ -26,13 +26,13 @@ def test_parse_multiline_bibtex_entry() -> None:
 
 
 def test_parse_old_style_arxiv_id() -> None:
-    text = r'''
+    text = r"""
 @article{Example:1999abc,
     title = "{Old style arXiv ID}",
     eprint = "hep-ph/9901001",
     archivePrefix = "arXiv"
 }
-'''
+"""
 
     entry = parse_bibtex(text)[0]
 
@@ -40,13 +40,13 @@ def test_parse_old_style_arxiv_id() -> None:
 
 
 def test_skip_non_arxiv_entry() -> None:
-    text = r'''
+    text = r"""
 @article{Peterson:1993nk,
     title = "{JETNET 3.0: A Versatile artificial neural network package}",
     doi = "10.1016/0010-4655(94)90120-1",
     year = "1994"
 }
-'''
+"""
 
     entry = parse_bibtex(text)[0]
 

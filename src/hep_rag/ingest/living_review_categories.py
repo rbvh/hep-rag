@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-
 CITE_RE = re.compile(r"\\cite\{([^}]*)\}")
 TEXTIT_RE = re.compile(r"\\textit\{(.+)\}")
 
@@ -27,10 +26,7 @@ class LivingReviewCategoryIndex:
     def paths_for_key(self, bib_key: str) -> list[list[str]]:
         """Return category paths for a BibTeX key as JSON-friendly lists."""
 
-        return [
-            list(assignment.path)
-            for assignment in self.assignments_by_key.get(bib_key, [])
-        ]
+        return [list(assignment.path) for assignment in self.assignments_by_key.get(bib_key, [])]
 
 
 def parse_living_review_categories(tex: str) -> LivingReviewCategoryIndex:

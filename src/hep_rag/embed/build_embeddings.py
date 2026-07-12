@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from hep_rag.search.documents import retrieval_document_text
 
 DEFAULT_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_CHUNKS_PATH = Path("data/processed/chunks.jsonl")
@@ -66,7 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.normalize:
         vectors = normalize_rows(vectors)
 
-    rows = [embedding_row(index, chunk, text) for index, (chunk, text) in enumerate(zip(chunks, texts))]
+    rows = [
+        embedding_row(index, chunk, text)
+        for index, (chunk, text) in enumerate(zip(chunks, texts, strict=True))
+    ]
     write_outputs(
         out_dir=out_dir,
         vectors=vectors,
@@ -181,29 +185,9 @@ def load_chunks(path: Path, limit: int | None = None) -> list[dict[str, Any]]:
 
 
 def embedding_text(chunk: dict[str, Any], include_metadata_context: bool = True) -> str:
-    text = str(chunk.get("text") or "").strip()
     if not include_metadata_context:
-        return text
-
-    context_lines = []
-    title = chunk.get("title")
-    if title:
-        context_lines.append(f"Title: {title}")
-
-    section_path = chunk.get("section_path") or []
-    if section_path:
-        context_lines.append(f"Section: {' > '.join(str(part) for part in section_path)}")
-
-    categories = chunk.get("living_review_categories") or []
-    if categories:
-        rendered_categories = [
-            " > ".join(str(part) for part in category) for category in categories
-        ]
-        context_lines.append(f"Living Review categories: {'; '.join(rendered_categories)}")
-
-    if not context_lines:
-        return text
-    return "\n".join([*context_lines, "", text])
+        return str(chunk.get("text") or "").strip()
+    return retrieval_document_text(chunk, style="dense")
 
 
 def embed_with_openai_compatible(texts: list[str], args: argparse.Namespace):
@@ -218,7 +202,10 @@ def embed_with_openai_compatible(texts: list[str], args: argparse.Namespace):
     embeddings: list[list[float]] = []
     url = args.base_url.rstrip("/") + "/embeddings"
     for start in range(0, len(texts), args.batch_size):
-        batch = [embedding_input_text(text, args.prompt) for text in texts[start : start + args.batch_size]]
+        batch = [
+            embedding_input_text(text, args.prompt)
+            for text in texts[start : start + args.batch_size]
+        ]
         payload_body: dict[str, Any] = {"model": args.model, "input": batch}
         truncate_prompt_tokens = getattr(args, "truncate_prompt_tokens", None)
         if truncate_prompt_tokens is not None:

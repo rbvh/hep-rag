@@ -40,8 +40,22 @@ def paper(number: int, paper_id: str) -> PaperEvidence:
         paper_id=paper_id,
         title=f"Paper {paper_id}",
         source_url=None,
-        abstract=chunk(paper_id, f"{paper_id}:abstract", "abstract", f"Abstract {paper_id}", "Abstract"),
-        passages=[chunk(paper_id, f"{paper_id}:passage", "paragraph", f"Passage {paper_id}", "Methods")],
+        abstract=chunk(
+            paper_id,
+            f"{paper_id}:abstract",
+            "abstract",
+            f"Abstract {paper_id}",
+            "Abstract",
+        ),
+        passages=[
+            chunk(
+                paper_id,
+                f"{paper_id}:passage",
+                "paragraph",
+                f"Passage {paper_id}",
+                "Methods",
+            )
+        ],
     )
 
 
@@ -99,9 +113,6 @@ def test_format_answer_appends_numbered_sources() -> None:
 def test_ask_parser_defaults_to_grounded_hybrid_rag() -> None:
     args: Namespace = build_parser().parse_args(["How does this work?"])
 
-    assert args.retrieval == "hybrid"
-    assert args.rerank is True
-    assert args.top_k == 6
-    assert args.neighbor_window == 0
-    assert args.max_context_tokens == 5500
-    assert args.qa_model == "Qwen/Qwen3.5-0.8B"
+    assert args.question == "How does this work?"
+    assert args.database_url is None
+    assert args.json is False

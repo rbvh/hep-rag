@@ -1,50 +1,13 @@
 import pytest
-from argparse import Namespace
 
 import hep_rag.search.common as search_common
 from hep_rag.search.common import (
     SearchHit,
     diversify_hits,
-    format_hits,
     parse_rerank_scores,
-    read_query,
     rerank_hits,
 )
-
-
-def test_format_hits_renders_vector_and_rerank_scores() -> None:
-    hit = SearchHit(
-        rank=1,
-        score=7.25,
-        vector_score=0.875,
-        rerank_score=7.25,
-        chunk_id="2501.00001:chunk:00000:abc",
-        paper_id="2501.00001",
-        title="A Test Paper",
-        section_path=["Methods"],
-        living_review_categories=[["Generative models", "Normalizing flows"]],
-        chunk_type="paragraph",
-        token_count=42,
-        text="A retrieved chunk about normalizing flows.",
-        source_url=None,
-    )
-
-    rendered = format_hits([hit])
-
-    assert "2501.00001:chunk:00000:abc" in rendered
-    assert "Score: 7.2500" in rendered
-    assert "Rerank score: 7.2500" in rendered
-    assert "Vector score: 0.8750" in rendered
-    assert "Categories: Generative models > Normalizing flows" in rendered
-
-
-def test_read_query_requires_query_text() -> None:
-    class Args:
-        query = None
-        query_file = None
-
-    with pytest.raises(SystemExit):
-        read_query(Args())
+from hep_rag.search.config import RerankConfig
 
 
 def test_rerank_hits_sorts_by_reranker_score(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,7 +26,7 @@ def test_rerank_hits_sorts_by_reranker_score(monkeypatch: pytest.MonkeyPatch) ->
     hits = [
         SearchHit(
             rank=1,
-            score=0.9,
+            final_score=0.9,
             vector_score=0.9,
             rerank_score=None,
             chunk_id="a",
@@ -78,7 +41,7 @@ def test_rerank_hits_sorts_by_reranker_score(monkeypatch: pytest.MonkeyPatch) ->
         ),
         SearchHit(
             rank=2,
-            score=0.8,
+            final_score=0.8,
             vector_score=0.8,
             rerank_score=None,
             chunk_id="b",
@@ -92,21 +55,17 @@ def test_rerank_hits_sorts_by_reranker_score(monkeypatch: pytest.MonkeyPatch) ->
             source_url=None,
         ),
     ]
-    args = Namespace(
-        rerank_model="fake-reranker",
-        rerank_base_url="http://reranker",
-        rerank_endpoint="/rerank",
-        rerank_api_key=None,
-        rerank_timeout=120.0,
-        rerank_max_length=None,
-        rerank_instruction="judge relevance",
+    config = RerankConfig(
+        model="fake-reranker",
+        base_url="http://reranker",
+        instruction="judge relevance",
     )
 
-    reranked = rerank_hits("query", hits, args)
+    reranked = rerank_hits("query", hits, config)
 
     assert [hit.chunk_id for hit in reranked] == ["b", "a"]
     assert reranked[0].rank == 1
-    assert reranked[0].score == 2.0
+    assert reranked[0].final_score == 2.0
     assert reranked[0].vector_score == 0.8
     assert reranked[0].rerank_score == 2.0
 
@@ -148,7 +107,7 @@ def test_diversify_hits_limits_chunks_per_paper() -> None:
     hits = [
         SearchHit(
             rank=1,
-            score=0.9,
+            final_score=0.9,
             chunk_id="a1",
             paper_id="paper-a",
             title=None,
@@ -161,7 +120,7 @@ def test_diversify_hits_limits_chunks_per_paper() -> None:
         ),
         SearchHit(
             rank=2,
-            score=0.8,
+            final_score=0.8,
             chunk_id="a2",
             paper_id="paper-a",
             title=None,
@@ -174,7 +133,7 @@ def test_diversify_hits_limits_chunks_per_paper() -> None:
         ),
         SearchHit(
             rank=3,
-            score=0.7,
+            final_score=0.7,
             chunk_id="b1",
             paper_id="paper-b",
             title=None,
@@ -197,7 +156,7 @@ def test_diversify_hits_without_cap_returns_top_k() -> None:
     hits = [
         SearchHit(
             rank=index + 1,
-            score=float(index),
+            final_score=float(index),
             chunk_id=str(index),
             paper_id="same-paper",
             title=None,

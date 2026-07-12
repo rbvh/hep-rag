@@ -72,9 +72,7 @@ def _parse_entry(text: str, at_index: int) -> tuple[BibEntry | None, int]:
     return BibEntry(entry_type=entry_type, key=key, fields=fields, raw=raw), content_end + 1
 
 
-def _find_matching_delimiter(
-    text: str, start: int, open_char: str, close_char: str
-) -> int:
+def _find_matching_delimiter(text: str, start: int, open_char: str, close_char: str) -> int:
     depth = 0
     in_quote = False
     escaped = False

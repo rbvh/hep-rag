@@ -12,14 +12,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [project.scripts]
-hep-rag-living-review-sources = "hep_rag.ingest.living_review_sources:main"
-hep-rag-build-chunks = "hep_rag.ingest.build_chunks:main"
-hep-rag-build-embeddings = "hep_rag.embed.build_embeddings:main"
-hep-rag-embed-query = "hep_rag.embed.embed_query:main"
-hep-rag-pg-load = "hep_rag.search.pgvector_search:load_main"
-hep-rag-pg-search = "hep_rag.search.pgvector_search:search_main"
+hep-rag-pg-load = "hep_rag.search.postgres:main"
 hep-rag-ask = "hep_rag.qa.ask:main"
-hep-rag-eval-retrieval = "hep_rag.eval.retrieval_metrics:main"
+hep-rag-eval-retrieval = "hep_rag.eval.runner:main"
 
 [project.optional-dependencies]
 embeddings = [
@@ -27,6 +22,7 @@ embeddings = [
 ]
 dev = [
   "pytest>=8",
+  "ruff>=0.12",
 ]
 pgvector = [
   "numpy>=1.26",
@@ -38,3 +34,10 @@ gpu = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
